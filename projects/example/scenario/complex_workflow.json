@@ -1,0 +1,194 @@
+{
+  "name": "Complex Workflow Test",
+  "description": "Complete workflow: Create user, create post, add comments",
+  "host": "default",
+  "tags": ["workflow", "integration", "local"],
+  "steps": [
+    {
+      "name": "Check Server Health",
+      "method": "GET",
+      "path": "/health",
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        }
+      ]
+    },
+    {
+      "name": "Create User",
+      "method": "POST",
+      "path": "/users",
+      "body": {
+        "name": "Test User",
+        "username": "testuser",
+        "email": "test@example.com"
+      },
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 201
+        },
+        {
+          "field": "body.id",
+          "operator": "exists"
+        }
+      ],
+      "extract": {
+        "user_id": "body.id"
+      }
+    },
+    {
+      "name": "Create Post",
+      "method": "POST",
+      "path": "/posts",
+      "delay_before": 0.3,
+      "body": {
+        "title": "My First Post",
+        "body": "This is the content of my first post",
+        "userId": "{{user_id}}"
+      },
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 201
+        },
+        {
+          "field": "body.id",
+          "operator": "exists"
+        },
+        {
+          "field": "body.title",
+          "operator": "eq",
+          "value": "My First Post"
+        }
+      ],
+      "extract": {
+        "post_id": "body.id"
+      }
+    },
+    {
+      "name": "Get Created Post",
+      "method": "GET",
+      "path": "/posts/{{post_id}}",
+      "delay_before": 0.2,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.id",
+          "operator": "exists"
+        },
+        {
+          "field": "body.title",
+          "operator": "eq",
+          "value": "My First Post"
+        }
+      ]
+    },
+    {
+      "name": "Add Comment 1",
+      "method": "POST",
+      "path": "/comments",
+      "delay_before": 0.3,
+      "body": {
+        "postId": "{{post_id}}",
+        "name": "Great post!",
+        "email": "commenter1@example.com",
+        "body": "This is a very informative post."
+      },
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 201
+        },
+        {
+          "field": "body.id",
+          "operator": "exists"
+        }
+      ],
+      "extract": {
+        "comment1_id": "body.id"
+      }
+    },
+    {
+      "name": "Add Comment 2",
+      "method": "POST",
+      "path": "/comments",
+      "delay_before": 0.2,
+      "body": {
+        "postId": "{{post_id}}",
+        "name": "Thanks for sharing!",
+        "email": "commenter2@example.com",
+        "body": "I learned a lot from this."
+      },
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 201
+        }
+      ]
+    },
+    {
+      "name": "Get Post Comments",
+      "method": "GET",
+      "path": "/posts/{{post_id}}/comments",
+      "delay_before": 0.3,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        }
+      ]
+    },
+    {
+      "name": "Get Server Stats",
+      "method": "GET",
+      "path": "/stats",
+      "delay_before": 0.2,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.users_count",
+          "operator": "exists"
+        },
+        {
+          "field": "body.posts_count",
+          "operator": "exists"
+        },
+        {
+          "field": "body.comments_count",
+          "operator": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Delete User (Cleanup)",
+      "method": "DELETE",
+      "path": "/users/{{user_id}}",
+      "delay_before": 0.5,
+      "skip_on_failure": true,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        }
+      ]
+    }
+  ]
+}
+

@@ -1,0 +1,142 @@
+{
+  "name": "Simple GET Request Test",
+  "description": "Basic API health check and data retrieval from local dummy server",
+  "host": "default",
+  "tags": ["simple", "get", "local"],
+  "steps": [
+    {
+      "name": "Health Check",
+      "method": "GET",
+      "path": "/health",
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.status",
+          "operator": "eq",
+          "value": "healthy"
+        },
+        {
+          "field": "body.timestamp",
+          "operator": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Get Server Info",
+      "method": "GET",
+      "path": "/",
+      "delay_before": 0.2,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.message",
+          "operator": "exists"
+        },
+        {
+          "field": "body.version",
+          "operator": "eq",
+          "value": "1.0.0"
+        }
+      ]
+    },
+    {
+      "name": "Get All Posts",
+      "method": "GET",
+      "path": "/posts",
+      "delay_before": 0.2,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body",
+          "operator": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Get Single Post",
+      "method": "GET",
+      "path": "/posts/1",
+      "delay_before": 0.2,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.id",
+          "operator": "eq",
+          "value": 1
+        },
+        {
+          "field": "body.title",
+          "operator": "exists"
+        },
+        {
+          "field": "body.body",
+          "operator": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Get Post Comments",
+      "method": "GET",
+      "path": "/posts/1/comments",
+      "delay_before": 0.2,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        }
+      ]
+    },
+    {
+      "name": "Get All Comments",
+      "method": "GET",
+      "path": "/comments",
+      "delay_before": 0.2,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        }
+      ]
+    },
+    {
+      "name": "Get Server Stats",
+      "method": "GET",
+      "path": "/stats",
+      "delay_before": 0.2,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.posts_count",
+          "operator": "exists"
+        },
+        {
+          "field": "body.comments_count",
+          "operator": "exists"
+        }
+      ]
+    }
+  ]
+}
+

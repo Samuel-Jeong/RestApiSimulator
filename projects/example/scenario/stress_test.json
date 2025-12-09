@@ -1,0 +1,45 @@
+{
+  "name": "Stress Test Scenario",
+  "description": "Rapid fire requests to test server under stress",
+  "host": "default",
+  "tags": ["stress", "performance", "local"],
+  "steps": [
+    {
+      "name": "Get Posts",
+      "method": "GET",
+      "path": "/posts",
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        }
+      ]
+    },
+    {
+      "name": "Get Comments",
+      "method": "GET",
+      "path": "/comments",
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        }
+      ]
+    },
+    {
+      "name": "Get Stats",
+      "method": "GET",
+      "path": "/stats",
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        }
+      ]
+    }
+  ]
+}
+

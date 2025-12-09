@@ -1,0 +1,153 @@
+{
+  "name": "User CRUD Operations",
+  "description": "Complete CRUD test for user management API on local dummy server",
+  "host": "default",
+  "tags": ["crud", "user", "api", "local"],
+  "steps": [
+    {
+      "name": "Create New User",
+      "method": "POST",
+      "path": "/users",
+      "body": {
+        "name": "John Doe",
+        "username": "johndoe",
+        "email": "john.doe@example.com",
+        "phone": "010-1234-5678"
+      },
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 201
+        },
+        {
+          "field": "body.id",
+          "operator": "exists"
+        },
+        {
+          "field": "body.name",
+          "operator": "eq",
+          "value": "John Doe"
+        },
+        {
+          "field": "body.created_at",
+          "operator": "exists"
+        }
+      ],
+      "extract": {
+        "user_id": "body.id"
+      }
+    },
+    {
+      "name": "Get All Users",
+      "method": "GET",
+      "path": "/users",
+      "delay_before": 0.3,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        }
+      ]
+    },
+    {
+      "name": "Get User Details",
+      "method": "GET",
+      "path": "/users/{{user_id}}",
+      "delay_before": 0.2,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.id",
+          "operator": "exists"
+        },
+        {
+          "field": "body.username",
+          "operator": "eq",
+          "value": "johndoe"
+        }
+      ]
+    },
+    {
+      "name": "Update User",
+      "method": "PUT",
+      "path": "/users/{{user_id}}",
+      "body": {
+        "name": "John Doe Updated",
+        "username": "johndoe_updated",
+        "email": "john.updated@example.com",
+        "phone": "010-9876-5432"
+      },
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.name",
+          "operator": "eq",
+          "value": "John Doe Updated"
+        },
+        {
+          "field": "body.updated_at",
+          "operator": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Verify User Updated",
+      "method": "GET",
+      "path": "/users/{{user_id}}",
+      "delay_before": 0.2,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.username",
+          "operator": "eq",
+          "value": "johndoe_updated"
+        }
+      ]
+    },
+    {
+      "name": "Delete User",
+      "method": "DELETE",
+      "path": "/users/{{user_id}}",
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.message",
+          "operator": "contains",
+          "value": "deleted"
+        }
+      ]
+    },
+    {
+      "name": "Verify User Deleted",
+      "method": "GET",
+      "path": "/users/{{user_id}}",
+      "skip_on_failure": true,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 404
+        }
+      ]
+    }
+  ]
+}
+

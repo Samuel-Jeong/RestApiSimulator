@@ -1,0 +1,188 @@
+{
+  "name": "Local Server Test",
+  "description": "Test scenario for local dummy server",
+  "host": "local",
+  "tags": ["local", "test"],
+  "steps": [
+    {
+      "name": "Health Check",
+      "method": "GET",
+      "path": "/health",
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.status",
+          "operator": "eq",
+          "value": "healthy"
+        }
+      ]
+    },
+    {
+      "name": "Get All Posts",
+      "method": "GET",
+      "path": "/posts",
+      "delay_before": 0.5,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body",
+          "operator": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Get Post 1",
+      "method": "GET",
+      "path": "/posts/1",
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.id",
+          "operator": "eq",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "Get Post Comments",
+      "method": "GET",
+      "path": "/posts/1/comments",
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        }
+      ]
+    },
+    {
+      "name": "Create User",
+      "method": "POST",
+      "path": "/users",
+      "body": {
+        "name": "Test User",
+        "username": "testuser",
+        "email": "test@example.com",
+        "phone": "010-1234-5678"
+      },
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 201
+        },
+        {
+          "field": "body.id",
+          "operator": "exists"
+        },
+        {
+          "field": "body.name",
+          "operator": "eq",
+          "value": "Test User"
+        }
+      ],
+      "extract": {
+        "user_id": "body.id"
+      }
+    },
+    {
+      "name": "Get Created User",
+      "method": "GET",
+      "path": "/users/{{user_id}}",
+      "delay_before": 0.3,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.id",
+          "operator": "eq",
+          "value": "{{user_id}}"
+        },
+        {
+          "field": "body.username",
+          "operator": "eq",
+          "value": "testuser"
+        }
+      ]
+    },
+    {
+      "name": "Update User",
+      "method": "PUT",
+      "path": "/users/{{user_id}}",
+      "body": {
+        "name": "Updated User",
+        "username": "testuser_updated",
+        "email": "updated@example.com"
+      },
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.name",
+          "operator": "eq",
+          "value": "Updated User"
+        }
+      ]
+    },
+    {
+      "name": "Delete User",
+      "method": "DELETE",
+      "path": "/users/{{user_id}}",
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        }
+      ]
+    },
+    {
+      "name": "Verify User Deleted",
+      "method": "GET",
+      "path": "/users/{{user_id}}",
+      "skip_on_failure": true,
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 404
+        }
+      ]
+    },
+    {
+      "name": "Get Stats",
+      "method": "GET",
+      "path": "/stats",
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.posts_count",
+          "operator": "exists"
+        }
+      ]
+    }
+  ]
+}
+

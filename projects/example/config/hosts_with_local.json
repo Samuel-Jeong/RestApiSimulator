@@ -1,0 +1,21 @@
+{
+  "default": {
+    "base_url": "https://jsonplaceholder.typicode.com",
+    "timeout": 30,
+    "headers": {
+      "Content-Type": "application/json",
+      "User-Agent": "REST-API-Simulator/1.0"
+    },
+    "verify_ssl": true
+  },
+  "local": {
+    "base_url": "http://localhost:7878",
+    "timeout": 10,
+    "headers": {
+      "Content-Type": "application/json",
+      "User-Agent": "REST-API-Simulator/1.0"
+    },
+    "verify_ssl": false
+  }
+}
+

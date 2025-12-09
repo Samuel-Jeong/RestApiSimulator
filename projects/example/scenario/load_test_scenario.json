@@ -1,0 +1,26 @@
+{
+  "name": "Load Test Scenario",
+  "description": "Simple scenario for load testing local dummy server",
+  "host": "default",
+  "tags": ["load", "performance", "local"],
+  "steps": [
+    {
+      "name": "Health Check",
+      "method": "GET",
+      "path": "/health",
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.status",
+          "operator": "eq",
+          "value": "healthy"
+        }
+      ]
+    }
+  ]
+}
+
