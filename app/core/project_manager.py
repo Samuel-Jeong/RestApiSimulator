@@ -152,8 +152,11 @@ class ProjectManager:
         results_dir = self.get_results_dir(project_name)
         
         results = []
-        for file in results_dir.glob("*.json"):
-            results.append(file.stem)
+        # Search recursively for JSON files
+        for file in results_dir.rglob("*.json"):
+            # Get relative path from results_dir
+            rel_path = file.relative_to(results_dir)
+            results.append(str(rel_path))
         
         return sorted(results, reverse=True)
 
