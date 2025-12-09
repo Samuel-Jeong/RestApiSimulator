@@ -1069,111 +1069,256 @@ class RestApiSimulatorApp(App):
             
             update_ui(update_host_info)
             
-            # Initialize scenario engine and execute
-            engine = ScenarioEngine(host_config)
-            
-            # Progress callback
-            def on_progress(step_name: str, current: int, total: int):
-                def update_progress():
-                    log_output = self.query_one("#log_output", RichLog)
-                    log_output.write(f"Step {current}/{total}: {step_name}")
-                update_ui(update_progress)
-            
-            # Execute scenario
+            # Check if this is a load test or regular scenario
             import asyncio
-            result = asyncio.run(engine.execute_scenario(scenario, progress_callback=on_progress))
             
-            # Visualize each step
-            def visualize_results():
-                api_flow = self.query_one("#api_flow", RichLog)
-                log_output = self.query_one("#log_output", RichLog)
+            if scenario.load_test_config:
+                # Load test mode
+                from app.core.load_test_engine import LoadTestEngine
                 
-                for idx, step in enumerate(result.steps, 1):
-                    status_icon = "OK" if step.status == "success" else "ERR"
-                    status_code = step.status_code or "N/A"
+                def update_load_test_info():
+                    log_output = self.query_one("#log_output", RichLog)
+                    content = self.query_one("#content_area", Static)
                     
-                    # Truncate URL if too long
-                    url_path = step.url
-                    if len(url_path) > 60:
-                        url_path = url_path[:57] + "..."
+                    log_output.write("⚡ LOAD TEST MODE ENABLED")
+                    log_output.write(f"Duration: {scenario.load_test_config.duration_seconds}s")
+                    log_output.write(f"Target TPS: {scenario.load_test_config.target_tps}")
+                    log_output.write(f"Ramp-up: {scenario.load_test_config.ramp_up_seconds}s")
+                    log_output.write(f"Max Concurrent: {scenario.load_test_config.max_concurrent}")
+                    log_output.write(f"Distribution: {scenario.load_test_config.distribution}")
+                    log_output.write("")
                     
-                    # Request arrow
-                    api_flow.write(f"{step.method:>6} ───────────────► {url_path}")
+                    text = f"╔═ LOAD TEST - {scenario_name} ═══════════════════════════╗\n\n"
+                    text += f"Target: {host_config.base_url}\n"
+                    text += f"Duration: {scenario.load_test_config.duration_seconds}s | "
+                    text += f"Target TPS: {scenario.load_test_config.target_tps}\n\n"
+                    text += "Test in progress...\n"
+                    content.update(text)
+                
+                update_ui(update_load_test_info)
+                
+                # Metrics callback
+                def on_metrics(metrics):
+                    def update_metrics():
+                        content = self.query_one("#content_area", Static)
+                        log_output = self.query_one("#log_output", RichLog)
+                        
+                        elapsed = int(metrics.elapsed_seconds)
+                        text = f"╔═ LOAD TEST - {scenario_name} ═══════════════════════════╗\n\n"
+                        text += f"Target: {host_config.base_url}\n"
+                        text += f"Elapsed: {elapsed}s / {scenario.load_test_config.duration_seconds}s\n\n"
+                        text += f"📊 Real-time Metrics:\n"
+                        text += f"  TPS: {metrics.current_tps:.1f} / {scenario.load_test_config.target_tps}\n"
+                        text += f"  Total Requests: {metrics.total_requests}\n"
+                        text += f"  Success: {metrics.successful_requests} | "
+                        text += f"Failed: {metrics.failed_requests} | "
+                        text += f"Errors: {metrics.error_requests}\n"
+                        text += f"  Active Connections: {metrics.active_connections}\n\n"
+                        text += f"⏱️  Response Times:\n"
+                        text += f"  Avg: {metrics.avg_response_time_ms:.0f}ms\n"
+                        text += f"  P50: {metrics.p50_response_time_ms:.0f}ms\n"
+                        text += f"  P95: {metrics.p95_response_time_ms:.0f}ms\n"
+                        text += f"  P99: {metrics.p99_response_time_ms:.0f}ms\n"
+                        content.update(text)
                     
-                    # Response arrow
-                    api_flow.write(f"       ◄─────────────── [{status_icon}] {status_code} | {step.response_time_ms:.0f}ms")
+                    update_ui(update_metrics)
+                
+                engine = LoadTestEngine(host_config)
+                result = asyncio.run(engine.execute_load_test(
+                    scenario, 
+                    scenario.load_test_config,
+                    progress_callback=on_metrics
+                ))
+                
+            else:
+                # Regular scenario mode
+                engine = ScenarioEngine(host_config)
+                
+                # Progress callback
+                def on_progress(step_name: str, current: int, total: int):
+                    def update_progress():
+                        log_output = self.query_one("#log_output", RichLog)
+                        log_output.write(f"Step {current}/{total}: {step_name}")
+                    update_ui(update_progress)
+                
+                # Execute scenario
+                result = asyncio.run(engine.execute_scenario(scenario, progress_callback=on_progress))
+            
+            # Display results based on test type
+            if scenario.load_test_config:
+                # Load test results
+                def show_load_test_results():
+                    log_output = self.query_one("#log_output", RichLog)
+                    content = self.query_one("#content_area", Static)
+                    api_flow = self.query_one("#api_flow", RichLog)
                     
-                    if idx < len(result.steps):
-                        api_flow.write("       │")
+                    log_output.write("")
+                    log_output.write("✓ Load test completed")
+                    log_output.write("")
+                    log_output.write("Summary:")
+                    log_output.write("-" * 60)
+                    log_output.write(f"Duration: {result.duration_seconds:.2f}s")
+                    log_output.write(f"Target TPS: {result.target_tps} | Actual: {result.actual_avg_tps:.2f}")
+                    log_output.write(f"Total Requests: {result.total_requests}")
+                    log_output.write(f"Success: {result.successful_requests} | Failed: {result.failed_requests} | Errors: {result.error_requests}")
+                    log_output.write(f"Success Rate: {result.success_rate:.1f}%")
+                    log_output.write("")
+                    
+                    if result.response_times:
+                        import statistics
+                        sorted_times = sorted(result.response_times)
+                        avg = statistics.mean(sorted_times)
+                        p50 = statistics.median(sorted_times)
+                        p95_idx = int(len(sorted_times) * 0.95)
+                        p99_idx = int(len(sorted_times) * 0.99)
+                        p95 = sorted_times[p95_idx] if p95_idx < len(sorted_times) else sorted_times[-1]
+                        p99 = sorted_times[p99_idx] if p99_idx < len(sorted_times) else sorted_times[-1]
+                        
+                        log_output.write("Response Times:")
+                        log_output.write(f"  Avg: {avg:.0f}ms | Min: {min(sorted_times):.0f}ms | Max: {max(sorted_times):.0f}ms")
+                        log_output.write(f"  P50: {p50:.0f}ms | P95: {p95:.0f}ms | P99: {p99:.0f}ms")
+                        log_output.write("")
+                    
+                    if result.status_code_distribution:
+                        log_output.write("Status Code Distribution:")
+                        for code, count in sorted(result.status_code_distribution.items()):
+                            log_output.write(f"  {code}: {count}")
+                        log_output.write("")
+                    
+                    # Display summary
+                    text = f"╔═ LOAD TEST COMPLETED - {scenario_name} ═════════════════╗\n\n"
+                    text += f"✓ Load test completed!\n\n"
+                    text += f"📊 Performance Metrics:\n"
+                    text += f"  Target TPS: {result.target_tps}\n"
+                    text += f"  Actual TPS: {result.actual_avg_tps:.2f}\n"
+                    text += f"  Duration: {result.duration_seconds:.2f}s\n\n"
+                    text += f"📈 Requests:\n"
+                    text += f"  Total: {result.total_requests}\n"
+                    text += f"  Success: {result.successful_requests}\n"
+                    text += f"  Failed: {result.failed_requests}\n"
+                    text += f"  Errors: {result.error_requests}\n"
+                    text += f"  Success Rate: {result.success_rate:.1f}%\n\n"
+                    
+                    if result.response_times:
+                        text += f"⏱️  Response Times:\n"
+                        text += f"  Avg: {avg:.0f}ms | P50: {p50:.0f}ms\n"
+                        text += f"  P95: {p95:.0f}ms | P99: {p99:.0f}ms\n\n"
+                    
+                    text += "─" * 60 + "\n"
+                    text += "\nType 'back' to return to scenario list\n"
+                    
+                    content.update(text)
+                    
+                    # Show TPS timeline in API flow
+                    api_flow.write("")
+                    api_flow.write("TPS Timeline (1-second intervals):")
+                    api_flow.write("=" * 80)
+                    for i, metrics in enumerate(result.metrics_timeline[:60], 1):  # Show first 60 seconds
+                        bar_length = int(metrics.current_tps / result.target_tps * 40) if result.target_tps > 0 else 0
+                        bar = "█" * min(bar_length, 40)
+                        api_flow.write(f"{i:3}s │{bar:<40}│ {metrics.current_tps:.1f} TPS")
+                    
+                    self.update_status(f"Load test completed: {scenario_name}")
                 
-                api_flow.write("")
-                api_flow.write("✓ Communication completed")
-                log_output.write("")
-            
-            update_ui(visualize_results)
-            
-            # Calculate metrics
-            avg_response_time_ms = 0
-            if result.steps:
-                total_response_time = sum(step.response_time_ms for step in result.steps)
-                avg_response_time_ms = total_response_time / len(result.steps)
-            
-            avg_response_time_s = avg_response_time_ms / 1000.0
-            success_rate = (result.successful_requests / result.total_requests * 100) if result.total_requests > 0 else 0
-            
-            # Update final results
-            def show_results():
-                log_output = self.query_one("#log_output", RichLog)
-                content = self.query_one("#content_area", Static)
+                update_ui(show_load_test_results)
                 
-                log_output.write("✓ Test completed successfully")
-                log_output.write("")
+            else:
+                # Regular scenario results
+                def visualize_results():
+                    api_flow = self.query_one("#api_flow", RichLog)
+                    log_output = self.query_one("#log_output", RichLog)
+                    
+                    for idx, step in enumerate(result.steps, 1):
+                        status_icon = "OK" if step.status == "success" else "ERR"
+                        status_code = step.status_code or "N/A"
+                        
+                        # Truncate URL if too long
+                        url_path = step.url
+                        if len(url_path) > 60:
+                            url_path = url_path[:57] + "..."
+                        
+                        # Request arrow
+                        api_flow.write(f"{step.method:>6} ───────────────► {url_path}")
+                        
+                        # Response arrow
+                        api_flow.write(f"       ◄─────────────── [{status_icon}] {status_code} | {step.response_time_ms:.0f}ms")
+                        
+                        if idx < len(result.steps):
+                            api_flow.write("       │")
+                    
+                    api_flow.write("")
+                    api_flow.write("✓ Communication completed")
+                    log_output.write("")
                 
-                # Log step details
-                log_output.write("Step Results:")
-                log_output.write("-" * 60)
-                for idx, step in enumerate(result.steps, 1):
-                    status_icon = "✓" if step.status == "success" else "✗"
-                    log_output.write(
-                        f"{status_icon} {idx}. {step.step_name} - {step.response_time_ms:.0f}ms (HTTP {step.status_code or 'N/A'})"
-                    )
-                    if step.error_message:
-                        log_output.write(f"   Error: {step.error_message}")
+                update_ui(visualize_results)
                 
-                log_output.write("")
-                log_output.write("Summary:")
-                log_output.write("-" * 60)
-                log_output.write(f"Total: {result.total_requests} requests")
-                log_output.write(f"Success: {result.successful_requests} | Failed: {result.failed_requests} | Errors: {result.error_requests}")
-                log_output.write(f"Avg Response: {avg_response_time_s:.3f}s ({avg_response_time_ms:.0f}ms)")
-                log_output.write(f"Success Rate: {success_rate:.1f}%")
-                log_output.write(f"Duration: {result.duration_seconds:.2f}s")
-                log_output.write(f"Status: {result.status.value.upper()}")
+                # Calculate metrics
+                avg_response_time_ms = 0
+                if result.steps:
+                    total_response_time = sum(step.response_time_ms for step in result.steps)
+                    avg_response_time_ms = total_response_time / len(result.steps)
                 
-                # Display results
-                text = f"╔═ TEST COMPLETED - {scenario_name} ════════════════════════╗\n\n"
-                text += f"✓ Test completed!\n\n"
-                text += f"Total requests: {result.total_requests}\n"
-                text += f"Successful: {result.successful_requests}\n"
-                text += f"Failed: {result.failed_requests}\n"
-                if result.error_requests > 0:
-                    text += f"Errors: {result.error_requests}\n"
-                text += f"Average response time: {avg_response_time_s:.3f}s ({avg_response_time_ms:.0f}ms)\n"
-                text += f"Success rate: {success_rate:.1f}%\n"
-                text += f"Duration: {result.duration_seconds:.2f}s\n\n"
-                text += "─" * 60 + "\n"
-                text += "\nType 'back' to return to scenario list\n"
-                text += "Log content can be selected and copied\n"
+                avg_response_time_s = avg_response_time_ms / 1000.0
+                success_rate = (result.successful_requests / result.total_requests * 100) if result.total_requests > 0 else 0
                 
-                content.update(text)
-                self.update_status(f"Test completed: {scenario_name}")
-            
-            update_ui(show_results)
+                # Update final results
+                def show_results():
+                    log_output = self.query_one("#log_output", RichLog)
+                    content = self.query_one("#content_area", Static)
+                    
+                    log_output.write("✓ Test completed successfully")
+                    log_output.write("")
+                    
+                    # Log step details
+                    log_output.write("Step Results:")
+                    log_output.write("-" * 60)
+                    for idx, step in enumerate(result.steps, 1):
+                        status_icon = "✓" if step.status == "success" else "✗"
+                        log_output.write(
+                            f"{status_icon} {idx}. {step.step_name} - {step.response_time_ms:.0f}ms (HTTP {step.status_code or 'N/A'})"
+                        )
+                        if step.error_message:
+                            log_output.write(f"   Error: {step.error_message}")
+                    
+                    log_output.write("")
+                    log_output.write("Summary:")
+                    log_output.write("-" * 60)
+                    log_output.write(f"Total: {result.total_requests} requests")
+                    log_output.write(f"Success: {result.successful_requests} | Failed: {result.failed_requests} | Errors: {result.error_requests}")
+                    log_output.write(f"Avg Response: {avg_response_time_s:.3f}s ({avg_response_time_ms:.0f}ms)")
+                    log_output.write(f"Success Rate: {success_rate:.1f}%")
+                    log_output.write(f"Duration: {result.duration_seconds:.2f}s")
+                    log_output.write(f"Status: {result.status.value.upper()}")
+                    
+                    # Display results
+                    text = f"╔═ TEST COMPLETED - {scenario_name} ════════════════════════╗\n\n"
+                    text += f"✓ Test completed!\n\n"
+                    text += f"Total requests: {result.total_requests}\n"
+                    text += f"Successful: {result.successful_requests}\n"
+                    text += f"Failed: {result.failed_requests}\n"
+                    if result.error_requests > 0:
+                        text += f"Errors: {result.error_requests}\n"
+                    text += f"Average response time: {avg_response_time_s:.3f}s ({avg_response_time_ms:.0f}ms)\n"
+                    text += f"Success rate: {success_rate:.1f}%\n"
+                    text += f"Duration: {result.duration_seconds:.2f}s\n\n"
+                    text += "─" * 60 + "\n"
+                    text += "\nType 'back' to return to scenario list\n"
+                    text += "Log content can be selected and copied\n"
+                    
+                    content.update(text)
+                    self.update_status(f"Test completed: {scenario_name}")
+                
+                update_ui(show_results)
             
             # Save report to results directory
             try:
                 results_dir = self.project_manager.get_results_dir(self.current_project)
-                report_path = ReportGenerator.save_scenario_report(result, results_dir, self.current_project)
+                
+                # Save appropriate report type
+                if scenario.load_test_config:
+                    report_path = ReportGenerator.save_load_test_report(result, results_dir, self.current_project)
+                else:
+                    report_path = ReportGenerator.save_scenario_report(result, results_dir, self.current_project)
                 
                 def log_saved():
                     log_output = self.query_one("#log_output", RichLog)
@@ -1181,33 +1326,34 @@ class RestApiSimulatorApp(App):
                     log_output.write(f"💾 Report saved: {report_path.name}")
                 update_ui(log_saved)
                 
-                # Generate UML diagrams
-                try:
-                    from datetime import datetime
-                    date_str = datetime.now().strftime("%Y%m%d")
-                    uml_dir = results_dir / "uml" / date_str
-                    uml_dir.mkdir(parents=True, exist_ok=True)
-                    
-                    # Generate diagrams
-                    sequence = UMLGenerator.generate_sequence_diagram(scenario)
-                    flowchart = UMLGenerator.generate_flowchart(scenario)
-                    text_diagram = UMLGenerator.generate_text_diagram(scenario)
-                    
-                    # Save diagrams
-                    scenario_name_safe = scenario.name.replace(" ", "_").replace("/", "_")
-                    UMLGenerator.save_diagram(sequence, str(uml_dir / f"{scenario_name_safe}_sequence.puml"))
-                    UMLGenerator.save_diagram(flowchart, str(uml_dir / f"{scenario_name_safe}_flowchart.puml"))
-                    UMLGenerator.save_diagram(text_diagram, str(uml_dir / f"{scenario_name_safe}_diagram.txt"))
-                    
-                    def log_uml_saved():
-                        log_output = self.query_one("#log_output", RichLog)
-                        log_output.write(f"🎨 UML diagrams saved to: {uml_dir}")
-                    update_ui(log_uml_saved)
-                except Exception as uml_err:
-                    def log_uml_error():
-                        log_output = self.query_one("#log_output", RichLog)
-                        log_output.write(f"⚠️  Warning: Failed to generate UML: {str(uml_err)}")
-                    update_ui(log_uml_error)
+                # Generate UML diagrams (only for regular scenarios)
+                if not scenario.load_test_config:
+                    try:
+                        from datetime import datetime
+                        date_str = datetime.now().strftime("%Y%m%d")
+                        uml_dir = results_dir / "uml" / date_str
+                        uml_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        # Generate diagrams
+                        sequence = UMLGenerator.generate_sequence_diagram(scenario)
+                        flowchart = UMLGenerator.generate_flowchart(scenario)
+                        text_diagram = UMLGenerator.generate_text_diagram(scenario)
+                        
+                        # Save diagrams
+                        scenario_name_safe = scenario.name.replace(" ", "_").replace("/", "_")
+                        UMLGenerator.save_diagram(sequence, str(uml_dir / f"{scenario_name_safe}_sequence.puml"))
+                        UMLGenerator.save_diagram(flowchart, str(uml_dir / f"{scenario_name_safe}_flowchart.puml"))
+                        UMLGenerator.save_diagram(text_diagram, str(uml_dir / f"{scenario_name_safe}_diagram.txt"))
+                        
+                        def log_uml_saved():
+                            log_output = self.query_one("#log_output", RichLog)
+                            log_output.write(f"🎨 UML diagrams saved to: {uml_dir}")
+                        update_ui(log_uml_saved)
+                    except Exception as uml_err:
+                        def log_uml_error():
+                            log_output = self.query_one("#log_output", RichLog)
+                            log_output.write(f"⚠️  Warning: Failed to generate UML: {str(uml_err)}")
+                        update_ui(log_uml_error)
                 
             except Exception as save_err:
                 def log_save_error():

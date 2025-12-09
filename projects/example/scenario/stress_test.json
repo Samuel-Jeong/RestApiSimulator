@@ -1,8 +1,15 @@
 {
   "name": "Stress Test Scenario",
-  "description": "Rapid fire requests to test server under stress",
+  "description": "High-load stress test with 50 TPS",
   "host": "default",
   "tags": ["stress", "performance", "local"],
+  "load_test_config": {
+    "duration_seconds": 60,
+    "target_tps": 50,
+    "ramp_up_seconds": 10,
+    "max_concurrent": 50,
+    "distribution": "exponential"
+  },
   "steps": [
     {
       "name": "Get Posts",

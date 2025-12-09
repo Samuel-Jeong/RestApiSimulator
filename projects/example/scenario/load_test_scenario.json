@@ -1,8 +1,15 @@
 {
   "name": "Load Test Scenario",
-  "description": "Simple scenario for load testing local dummy server",
+  "description": "Load testing scenario with TPS control",
   "host": "default",
   "tags": ["load", "performance", "local"],
+  "load_test_config": {
+    "duration_seconds": 30,
+    "target_tps": 10,
+    "ramp_up_seconds": 5,
+    "max_concurrent": 20,
+    "distribution": "linear"
+  },
   "steps": [
     {
       "name": "Health Check",

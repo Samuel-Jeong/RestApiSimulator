@@ -191,12 +191,60 @@ projects/
 
 ## 테스트 실행
 
-### 시나리오 테스트
+### 일반 시나리오 테스트
 1. Scenarios 메뉴 선택 (Press S)
 2. 실행할 시나리오 번호 입력
 3. 'run' 명령으로 테스트 시작
 4. 실시간 진행률 및 결과 확인
-5. 테스트 완료 후 자동으로 결과 파일 저장
+5. 테스트 완료 후 자동으로 결과 파일 및 UML 다이어그램 저장
+
+### TPS/부하 테스트
+
+시나리오 JSON 파일에 `load_test_config` 섹션을 추가하면 자동으로 부하 테스트 모드로 실행됩니다.
+
+**설정 예시:**
+```json
+{
+  "name": "Load Test Scenario",
+  "description": "부하 테스트",
+  "host": "default",
+  "load_test_config": {
+    "duration_seconds": 60,
+    "target_tps": 100,
+    "ramp_up_seconds": 10,
+    "max_concurrent": 50,
+    "distribution": "linear"
+  },
+  "steps": [...]
+}
+```
+
+**파라미터 설명:**
+- `duration_seconds`: 테스트 지속 시간 (초)
+- `target_tps`: 목표 초당 트랜잭션 수
+- `ramp_up_seconds`: 목표 TPS까지 점진적 증가 시간 (초)
+- `max_concurrent`: 최대 동시 요청 수
+- `distribution`: 부하 분산 방식
+  - `constant`: 일정한 TPS 유지
+  - `linear`: 선형 증가 (0에서 target_tps까지)
+  - `exponential`: 지수 증가 (빠른 부하 증가)
+
+**실행 방법:**
+1. Scenarios 메뉴에서 부하 테스트 시나리오 선택
+2. 'run' 명령 실행
+3. 실시간 메트릭 모니터링:
+   - 현재 TPS
+   - 총 요청 수 (성공/실패/에러)
+   - 활성 연결 수
+   - 응답 시간 (Avg, P50, P95, P99)
+4. 테스트 완료 후 결과 자동 저장
+
+**부하 테스트 결과:**
+- 결과 파일: `projects/{project}/result/loadtests/{date}/`
+- TPS 타임라인 그래프
+- 응답 시간 분포
+- 상태 코드 분포
+- 에러 분석
 
 ## 결과 분석
 

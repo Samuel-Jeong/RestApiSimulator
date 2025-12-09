@@ -85,6 +85,10 @@ class Scenario(BaseModel):
     variables: Optional[Dict[str, Any]] = Field(default=None, description="Scenario variables")
     steps: List[ScenarioStep] = Field(..., description="Scenario steps", min_length=1)
     tags: List[str] = Field(default_factory=list, description="Scenario tags")
+    load_test_config: Optional['LoadTestConfig'] = Field(
+        default=None, 
+        description="Optional load test configuration. If specified, scenario will run as load test."
+    )
     
     class Config:
         json_schema_extra = {

@@ -179,6 +179,46 @@ engine = ScenarioEngine(hosts["default"])
 result = await engine.execute_scenario(scenario)
 ```
 
+### TPS/부하 테스트
+
+시나리오에 `load_test_config`를 추가하여 자동으로 부하 테스트 모드로 실행:
+
+```json
+{
+  "name": "Load Test Scenario",
+  "load_test_config": {
+    "duration_seconds": 60,
+    "target_tps": 100,
+    "ramp_up_seconds": 10,
+    "max_concurrent": 50,
+    "distribution": "linear"
+  },
+  "steps": [
+    {
+      "name": "API Request",
+      "method": "GET",
+      "path": "/api/endpoint"
+    }
+  ]
+}
+```
+
+**부하 테스트 파라미터:**
+- `duration_seconds`: 테스트 지속 시간
+- `target_tps`: 목표 초당 트랜잭션 수
+- `ramp_up_seconds`: 목표 TPS까지 증가 시간
+- `max_concurrent`: 최대 동시 요청 수
+- `distribution`: 부하 분산 패턴
+  - `constant`: 일정한 부하
+  - `linear`: 선형 증가
+  - `exponential`: 지수 증가
+
+**실시간 메트릭:**
+- TPS (Transactions Per Second)
+- 응답 시간 (Avg, P50, P95, P99)
+- 성공/실패율
+- 활성 연결 수
+
 ## 문서
 
 - **[사용자 가이드](docs/USER_GUIDE.md)** - 상세한 사용 방법
