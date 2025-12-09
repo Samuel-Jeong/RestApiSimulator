@@ -658,6 +658,14 @@ class RestApiSimulatorApp(App):
             with open(full_path, 'r') as f:
                 result_data = json.load(f)
             
+            # Check test type
+            test_type = result_data.get('test_type', 'scenario')
+            
+            if test_type == 'load_test':
+                # Handle load test results
+                self._show_load_test_detail(result_data, analysis_content, api_flow, log_output, result_path)
+                return
+            
             # Get scenario result
             scenario_result = result_data.get('scenario_results', [{}])[0]
             steps = scenario_result.get('steps', [])
@@ -879,6 +887,175 @@ class RestApiSimulatorApp(App):
             self.show_error(f"Failed to load result: {str(e)}")
             import traceback
             traceback.print_exc()
+    
+    def _show_load_test_detail(self, result_data, analysis_content, api_flow, log_output, result_path):
+        """Show load test result details"""
+        import statistics
+        
+        load_result = result_data.get('load_test_result', {})
+        
+        # Clear panels
+        analysis_content.clear()
+        api_flow.clear()
+        log_output.clear()
+        
+        # === LEFT PANEL: Analysis Data ===
+        analysis_content.write("╔═ LOAD TEST RESULT ANALYSIS ═══════════════════╗")
+        analysis_content.write(f"{load_result.get('test_name', 'Load Test')}")
+        analysis_content.write("")
+        
+        # Test Configuration
+        analysis_content.write("═══ TEST CONFIGURATION ═══")
+        analysis_content.write(f"Duration:          {load_result.get('duration_seconds', 0):.2f}s")
+        analysis_content.write(f"Target TPS:        {load_result.get('target_tps', 0)}")
+        analysis_content.write(f"Actual Avg TPS:    {load_result.get('actual_avg_tps', 0):.2f}")
+        tps_achievement = (load_result.get('actual_avg_tps', 0) / load_result.get('target_tps', 1) * 100) if load_result.get('target_tps', 0) > 0 else 0
+        analysis_content.write(f"TPS Achievement:   {tps_achievement:.1f}%")
+        analysis_content.write("")
+        
+        # Request Summary
+        analysis_content.write("═══ REQUEST SUMMARY ═══")
+        analysis_content.write(f"Total Requests:    {load_result.get('total_requests', 0)}")
+        analysis_content.write(f"✓ Successful:      {load_result.get('successful_requests', 0)}")
+        analysis_content.write(f"✗ Failed:          {load_result.get('failed_requests', 0)}")
+        analysis_content.write(f"⚠ Errors:          {load_result.get('error_requests', 0)}")
+        analysis_content.write(f"Success Rate:      {load_result.get('success_rate', 0):.2f}%")
+        analysis_content.write("")
+        
+        # Response Time Metrics
+        response_times = load_result.get('response_times', [])
+        if response_times:
+            sorted_times = sorted(response_times)
+            avg = statistics.mean(sorted_times)
+            p50 = statistics.median(sorted_times)
+            p95_idx = int(len(sorted_times) * 0.95)
+            p99_idx = int(len(sorted_times) * 0.99)
+            p95 = sorted_times[p95_idx] if p95_idx < len(sorted_times) else sorted_times[-1]
+            p99 = sorted_times[p99_idx] if p99_idx < len(sorted_times) else sorted_times[-1]
+            
+            analysis_content.write("═══ RESPONSE TIME METRICS ═══")
+            analysis_content.write(f"Average:           {avg:.2f}ms")
+            analysis_content.write(f"Min:               {min(sorted_times):.2f}ms")
+            analysis_content.write(f"Max:               {max(sorted_times):.2f}ms")
+            analysis_content.write(f"P50 (median):      {p50:.2f}ms")
+            analysis_content.write(f"P95:               {p95:.2f}ms")
+            analysis_content.write(f"P99:               {p99:.2f}ms")
+            analysis_content.write("")
+        
+        # Status Code Distribution
+        status_dist = load_result.get('status_code_distribution', {})
+        if status_dist:
+            analysis_content.write("═══ STATUS CODE DISTRIBUTION ═══")
+            for code, count in sorted(status_dist.items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else 0):
+                percentage = (count / load_result.get('total_requests', 1) * 100) if load_result.get('total_requests', 0) > 0 else 0
+                analysis_content.write(f"  {code}:  {count:>6}  ({percentage:.1f}%)")
+            analysis_content.write("")
+        
+        # Error Distribution
+        error_dist = load_result.get('error_distribution', {})
+        if error_dist:
+            analysis_content.write("═══ ERROR DISTRIBUTION ═══")
+            for error, count in sorted(error_dist.items(), key=lambda x: x[1], reverse=True)[:10]:
+                error_short = error[:50] + "..." if len(error) > 50 else error
+                analysis_content.write(f"  {count:>4}x  {error_short}")
+            if len(error_dist) > 10:
+                analysis_content.write(f"  ... and {len(error_dist) - 10} more errors")
+            analysis_content.write("")
+        
+        analysis_content.write("")
+        analysis_content.write("Type 'back' to return to results list")
+        
+        # === RIGHT PANEL TOP: TPS Timeline ===
+        api_flow.write("╔" + "═" * 58 + "╗")
+        api_flow.write("║" + " " * 18 + "TPS TIMELINE GRAPH" + " " * 20 + "║")
+        api_flow.write("╚" + "═" * 58 + "╝")
+        api_flow.write("")
+        
+        metrics_timeline = load_result.get('metrics_timeline', [])
+        if metrics_timeline:
+            target_tps = load_result.get('target_tps', 100)
+            max_display = 60  # Show first 60 seconds
+            
+            for i, metrics in enumerate(metrics_timeline[:max_display], 1):
+                current_tps = metrics.get('current_tps', 0)
+                bar_length = int((current_tps / target_tps) * 40) if target_tps > 0 else 0
+                bar_length = min(bar_length, 40)
+                bar = "█" * bar_length
+                
+                # Color indicator
+                if current_tps >= target_tps * 0.9:
+                    indicator = "✓"
+                elif current_tps >= target_tps * 0.7:
+                    indicator = "~"
+                else:
+                    indicator = "↓"
+                
+                api_flow.write(f"{i:3}s {indicator} │{bar:<40}│ {current_tps:.1f}")
+            
+            if len(metrics_timeline) > max_display:
+                api_flow.write(f"... ({len(metrics_timeline) - max_display} more seconds)")
+            
+            api_flow.write("")
+            api_flow.write(f"Target: {target_tps} TPS")
+            api_flow.write(f"Legend: ✓ ≥90%  ~ ≥70%  ↓ <70%")
+        else:
+            api_flow.write("No timeline data available")
+        
+        # === RIGHT PANEL BOTTOM: Detailed Metrics Log ===
+        log_output.write("═" * 58)
+        log_output.write("LOAD TEST DETAILED METRICS")
+        log_output.write("═" * 58)
+        log_output.write("")
+        
+        log_output.write(f"Test Name:         {load_result.get('test_name', 'N/A')}")
+        log_output.write(f"Start Time:        {load_result.get('start_time', 'N/A')}")
+        log_output.write(f"End Time:          {load_result.get('end_time', 'N/A')}")
+        log_output.write(f"Duration:          {load_result.get('duration_seconds', 0):.3f}s")
+        log_output.write("")
+        
+        log_output.write("Performance:")
+        log_output.write(f"  Target TPS:      {load_result.get('target_tps', 0)}")
+        log_output.write(f"  Actual TPS:      {load_result.get('actual_avg_tps', 0):.2f}")
+        log_output.write(f"  Achievement:     {tps_achievement:.1f}%")
+        log_output.write("")
+        
+        log_output.write("Requests:")
+        log_output.write(f"  Total:           {load_result.get('total_requests', 0)}")
+        log_output.write(f"  Successful:      {load_result.get('successful_requests', 0)}")
+        log_output.write(f"  Failed:          {load_result.get('failed_requests', 0)}")
+        log_output.write(f"  Errors:          {load_result.get('error_requests', 0)}")
+        log_output.write(f"  Success Rate:    {load_result.get('success_rate', 0):.2f}%")
+        log_output.write("")
+        
+        if response_times:
+            log_output.write("Response Times (ms):")
+            log_output.write(f"  Average:         {avg:.2f}")
+            log_output.write(f"  Minimum:         {min(sorted_times):.2f}")
+            log_output.write(f"  Maximum:         {max(sorted_times):.2f}")
+            log_output.write(f"  Median (P50):    {p50:.2f}")
+            log_output.write(f"  P95:             {p95:.2f}")
+            log_output.write(f"  P99:             {p99:.2f}")
+            log_output.write("")
+        
+        # Metrics timeline summary (show every 10 seconds)
+        if metrics_timeline:
+            log_output.write("TPS Over Time (10s intervals):")
+            log_output.write("─" * 58)
+            for i, metrics in enumerate(metrics_timeline[::10], 1):
+                elapsed = metrics.get('elapsed_seconds', 0)
+                tps = metrics.get('current_tps', 0)
+                active = metrics.get('active_connections', 0)
+                log_output.write(f"  {elapsed:.0f}s: TPS={tps:.1f}, Active={active}")
+            log_output.write("")
+        
+        log_output.write("═" * 58)
+        log_output.write("END OF REPORT")
+        log_output.write("═" * 58)
+        
+        self.update_status(f"Analyzing: {result_path}")
+        
+        # Focus input
+        self.query_one("#user_input", Input).focus()
     
     def handle_uml_input(self, user_input: str):
         """Handle UML generation"""
