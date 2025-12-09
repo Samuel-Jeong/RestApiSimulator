@@ -110,8 +110,7 @@ python main.py
 
 ### 키보드 단축키
 - `p`: Projects - 프로젝트 관리
-- `s`: Scenarios - 시나리오 관리
-- `l`: Load Test - 부하 테스트
+- `s`: Scenarios - 시나리오 실행
 - `r`: Results - 결과 보기
 - `u`: UML - UML 생성
 - `q`: Quit - 종료
@@ -180,22 +179,6 @@ engine = ScenarioEngine(hosts["default"])
 result = await engine.execute_scenario(scenario)
 ```
 
-### 부하 테스트
-```python
-from app.core.load_test_engine import LoadTestEngine
-from app.models.scenario import LoadTestConfig
-
-config = LoadTestConfig(
-    duration_seconds=60,
-    target_tps=100,
-    ramp_up_seconds=10,
-    max_concurrent=50
-)
-
-engine = LoadTestEngine(hosts["default"])
-result = await engine.execute_load_test(scenario, config)
-```
-
 ## 문서
 
 - **[사용자 가이드](docs/USER_GUIDE.md)** - 상세한 사용 방법
@@ -211,8 +194,7 @@ python test_quick.py
 ```
 
 이 스크립트는 다음을 테스트합니다:
-- 시나리오 실행
-- 부하 테스트
+- 시나리오 실행 및 결과 저장
 - UML 생성
 
 ## 기술 스택

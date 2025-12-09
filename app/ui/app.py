@@ -78,33 +78,65 @@ class RestApiSimulatorApp(App):
     
     RichLog {
         border: solid $primary;
-        height: 20;
-        scrollbar-gutter: stable;
-        margin: 1 0;
-    }
-    
-    #log_panel {
-        height: auto;
-        display: none;
-    }
-    
-    #log_panel.visible {
-        display: block;
-    }
-    
-    #api_visualizer {
-        height: 30;
-        border: solid $primary;
-        display: none;
-    }
-    
-    #api_visualizer.visible {
-        display: block;
-    }
-    
-    .api_flow {
         height: 100%;
+        width: 100%;
+        scrollbar-gutter: stable;
+    }
+    
+    #analysis_container {
+        display: none;
+        height: 1fr;
+        layout: horizontal;
+    }
+    
+    #analysis_container.visible {
+        display: block;
+    }
+    
+    #left_panel {
+        width: 50%;
+        height: 100%;
+        padding: 0 1;
+        overflow: hidden auto;
+        scrollbar-gutter: stable;
+    }
+    
+    #right_panel {
+        width: 50%;
+        height: 100%;
+        padding: 0 1;
+        layout: vertical;
+    }
+    
+    #analysis_content {
+        width: 100%;
+        height: 100%;
+        border: solid $primary;
         padding: 1;
+    }
+    
+    #uml_section {
+        height: 50%;
+        min-height: 20;
+        max-height: 50%;
+    }
+    
+    #log_section {
+        height: 50%;
+        min-height: 20;
+        max-height: 50%;
+    }
+    
+    .panel_title {
+        text-style: bold;
+        color: $accent;
+        padding: 0 1;
+        background: $panel;
+        width: 100%;
+    }
+    
+    Static {
+        width: 100%;
     }
     """
     
@@ -112,7 +144,6 @@ class RestApiSimulatorApp(App):
         Binding("q", "quit", "Quit", priority=True),
         Binding("p", "show_projects", "Projects"),
         Binding("s", "show_scenarios", "Scenarios"),
-        Binding("l", "show_load_test", "Load Test"),
         Binding("r", "show_results", "Results"),
         Binding("u", "show_uml", "UML"),
     ]
@@ -133,10 +164,8 @@ class RestApiSimulatorApp(App):
         with Container(id="main_container"):
             # Left menu panel
             with Vertical(id="menu_panel"):
-                yield Label("📋 Main Menu", classes="section_title")
                 yield Button("📁 Projects", id="btn_projects", classes="menu_button")
                 yield Button("📝 Scenarios", id="btn_scenarios", classes="menu_button")
-                yield Button("⚡ Load Test", id="btn_load_test", classes="menu_button")
                 yield Button("📊 Results", id="btn_results", classes="menu_button")
                 yield Button("🎨 UML Generator", id="btn_uml", classes="menu_button")
                 yield Button("⚙️  Settings", id="btn_settings", classes="menu_button")
@@ -145,11 +174,22 @@ class RestApiSimulatorApp(App):
             # Right content panel
             with Vertical(id="content_panel"):
                 yield Static("Welcome to REST API Simulator", id="content_area")
-                with Container(id="api_visualizer"):
-                    yield RichLog(id="api_flow", wrap=False, classes="api_flow")
-                with Container(id="log_panel"):
-                    yield Label("📋 Execution Log:", classes="section_title")
-                    yield RichLog(id="log_output", wrap=True, highlight=True)
+                
+                # Analysis split view (left: data, right: UML)
+                with Container(id="analysis_container"):
+                    with Vertical(id="left_panel"):
+                        yield Label("📊 Analysis Data", classes="panel_title")
+                        yield RichLog(id="analysis_content", wrap=True, markup=True, auto_scroll=False)
+                    
+                    with Vertical(id="right_panel"):
+                        with Container(id="uml_section"):
+                            yield Label("🎨 API Flow Diagram", classes="panel_title")
+                            yield RichLog(id="api_flow", wrap=False, auto_scroll=False)
+                        
+                        with Container(id="log_section"):
+                            yield Label("📋 Detailed Log", classes="panel_title")
+                            yield RichLog(id="log_output", wrap=True, highlight=True, auto_scroll=False)
+                
                 with Container(id="input_container"):
                     yield Input(placeholder="Enter command...", id="user_input")
         
@@ -164,6 +204,16 @@ class RestApiSimulatorApp(App):
     
     def show_welcome_screen(self):
         """Show welcome screen"""
+        # Hide analysis container
+        try:
+            analysis_container = self.query_one("#analysis_container")
+            analysis_container.remove_class("visible")
+            
+            content = self.query_one("#content_area", Static)
+            content.display = True
+        except:
+            pass  # Panels might not be mounted yet
+        
         content = self.query_one("#content_area", Static)
         
         welcome_text = """
@@ -178,14 +228,13 @@ class RestApiSimulatorApp(App):
         Features:
         • 📁 Project Management
         • 📝 Scenario-based Testing
-        • ⚡ TPS & Load Testing
         • 📊 Detailed Results & Reports
         • 🎨 UML Diagram Generation
         
         Quick Start:
-        1. Select or create a project
-        2. Create or select a scenario
-        3. Run tests and view results
+        1. Select or create a project (Press P)
+        2. Select a scenario and run it (Press S)
+        3. View test results (Press R)
         
         Press the menu buttons or use keyboard shortcuts to navigate.
         """
@@ -200,8 +249,6 @@ class RestApiSimulatorApp(App):
             self.show_projects_screen()
         elif button_id == "btn_scenarios":
             self.show_scenarios_screen()
-        elif button_id == "btn_load_test":
-            self.show_load_test_screen()
         elif button_id == "btn_results":
             self.show_results_screen()
         elif button_id == "btn_uml":
@@ -214,7 +261,14 @@ class RestApiSimulatorApp(App):
     def show_projects_screen(self):
         """Show projects management screen"""
         self.current_screen = "projects"
+        
+        # Hide analysis container
+        analysis_container = self.query_one("#analysis_container")
+        analysis_container.remove_class("visible")
+        
+        # Show main content
         content = self.query_one("#content_area", Static)
+        content.display = True
         
         projects = self.project_manager.list_projects()
         
@@ -247,13 +301,13 @@ class RestApiSimulatorApp(App):
         
         self.current_screen = "scenarios"
         
-        # Hide panels when returning to scenario list
-        log_panel = self.query_one("#log_panel")
-        api_visualizer = self.query_one("#api_visualizer")
-        log_panel.remove_class("visible")
-        api_visualizer.remove_class("visible")
+        # Hide analysis container
+        analysis_container = self.query_one("#analysis_container")
+        analysis_container.remove_class("visible")
         
+        # Show main content
         content = self.query_one("#content_area", Static)
+        content.display = True
         
         scenarios = self.project_manager.list_scenarios(self.current_project)
         
@@ -277,27 +331,6 @@ class RestApiSimulatorApp(App):
         # Focus input
         self.query_one("#user_input", Input).focus()
     
-    def show_load_test_screen(self):
-        """Show load test configuration screen"""
-        if not self.current_project:
-            self.show_error("Please select a project first")
-            return
-        
-        content = self.query_one("#content_area", Static)
-        
-        text = f"╔═ LOAD TEST - {self.current_project} ═══════════════════════╗\n\n"
-        text += "Load Test Configuration:\n\n"
-        text += "1. Select a scenario\n"
-        text += "2. Configure test parameters:\n"
-        text += "   • Duration (seconds)\n"
-        text += "   • Target TPS (transactions per second)\n"
-        text += "   • Ramp-up time (seconds)\n"
-        text += "   • Max concurrent requests\n"
-        text += "   • Load distribution (constant/linear/exponential)\n"
-        text += "\n3. Start test and monitor real-time metrics\n"
-        
-        content.update(text)
-        self.update_status("Load Test Configuration")
     
     def show_results_screen(self):
         """Show test results screen"""
@@ -307,13 +340,13 @@ class RestApiSimulatorApp(App):
         
         self.current_screen = "results"
         
-        # Hide panels
-        log_panel = self.query_one("#log_panel")
-        api_visualizer = self.query_one("#api_visualizer")
-        log_panel.remove_class("visible")
-        api_visualizer.remove_class("visible")
+        # Hide analysis container
+        analysis_container = self.query_one("#analysis_container")
+        analysis_container.remove_class("visible")
         
+        # Show main content
         content = self.query_one("#content_area", Static)
+        content.display = True
         
         results = self.project_manager.list_results(self.current_project)
         
@@ -344,7 +377,14 @@ class RestApiSimulatorApp(App):
             return
         
         self.current_screen = "uml"
+        
+        # Hide analysis container
+        analysis_container = self.query_one("#analysis_container")
+        analysis_container.remove_class("visible")
+        
+        # Show main content
         content = self.query_one("#content_area", Static)
+        content.display = True
         
         scenarios = self.project_manager.list_scenarios(self.current_project)
         
@@ -373,7 +413,13 @@ class RestApiSimulatorApp(App):
     
     def show_settings_screen(self):
         """Show settings screen"""
+        # Hide analysis container
+        analysis_container = self.query_one("#analysis_container")
+        analysis_container.remove_class("visible")
+        
+        # Show main content
         content = self.query_one("#content_area", Static)
+        content.display = True
         
         text = "╔═ SETTINGS ═════════════════════════════════════════════╗\n\n"
         text += "Application Settings:\n\n"
@@ -393,6 +439,16 @@ class RestApiSimulatorApp(App):
     
     def show_error(self, message: str):
         """Show error message"""
+        # Hide analysis container
+        try:
+            analysis_container = self.query_one("#analysis_container")
+            analysis_container.remove_class("visible")
+            
+            content = self.query_one("#content_area", Static)
+            content.display = True
+        except:
+            pass
+        
         content = self.query_one("#content_area", Static)
         content.update(f"\n⚠️  ERROR: {message}\n")
         self.update_status(f"Error: {message}")
@@ -413,10 +469,6 @@ class RestApiSimulatorApp(App):
     def action_show_scenarios(self) -> None:
         """Show scenarios screen"""
         self.show_scenarios_screen()
-    
-    def action_show_load_test(self) -> None:
-        """Show load test screen"""
-        self.show_load_test_screen()
     
     def action_show_results(self) -> None:
         """Show results screen"""
@@ -562,6 +614,9 @@ class RestApiSimulatorApp(App):
         
         # Check if back command
         if user_input.lower() == "back":
+            # Hide analysis container
+            analysis_container = self.query_one("#analysis_container")
+            analysis_container.remove_class("visible")
             self.show_results_screen()
             return
         
@@ -580,51 +635,250 @@ class RestApiSimulatorApp(App):
     def show_result_detail(self, result_path: str):
         """Show detailed result information"""
         import json
+        import statistics
         
+        # Hide main content and show analysis container
         content = self.query_one("#content_area", Static)
+        content.display = False
+        
+        analysis_container = self.query_one("#analysis_container")
+        analysis_container.add_class("visible")
+        
+        # Get widgets
+        analysis_content = self.query_one("#analysis_content", RichLog)
+        log_output = self.query_one("#log_output", RichLog)
+        api_flow = self.query_one("#api_flow", RichLog)
+        
+        log_output.clear()
+        api_flow.clear()
+        
         full_path = self.project_manager.get_results_dir(self.current_project) / result_path
         
         try:
             with open(full_path, 'r') as f:
                 result_data = json.load(f)
             
-            text = f"╔═ RESULT DETAIL - {result_path} ═══════════════════════════╗\n\n"
+            # Get scenario result
+            scenario_result = result_data.get('scenario_results', [{}])[0]
+            steps = scenario_result.get('steps', [])
             
-            # Show summary
-            if "scenario_name" in result_data:
-                text += f"Scenario: {result_data['scenario_name']}\n"
-            if "status" in result_data:
-                text += f"Status: {result_data['status']}\n"
-            if "duration_seconds" in result_data:
-                text += f"Duration: {result_data['duration_seconds']:.2f}s\n"
+            # Calculate statistics
+            response_times = [s['response_time_ms'] for s in steps if s.get('response_time_ms')]
+            avg_response = statistics.mean(response_times) if response_times else 0
+            min_response = min(response_times) if response_times else 0
+            max_response = max(response_times) if response_times else 0
             
-            text += f"\nRequests:\n"
-            text += f"  Total: {result_data.get('total_requests', 0)}\n"
-            text += f"  Successful: {result_data.get('successful_requests', 0)}\n"
-            text += f"  Failed: {result_data.get('failed_requests', 0)}\n"
-            text += f"  Errors: {result_data.get('error_requests', 0)}\n"
+            # P50, P95, P99
+            if response_times:
+                sorted_times = sorted(response_times)
+                p50 = sorted_times[int(len(sorted_times) * 0.50)]
+                p95 = sorted_times[int(len(sorted_times) * 0.95)] if len(sorted_times) > 1 else sorted_times[0]
+                p99 = sorted_times[int(len(sorted_times) * 0.99)] if len(sorted_times) > 1 else sorted_times[0]
+            else:
+                p50 = p95 = p99 = 0
             
-            if "steps" in result_data:
-                text += f"\nSteps ({len(result_data['steps'])}):\n"
-                for idx, step in enumerate(result_data['steps'][:10], 1):
-                    status_icon = "✓" if step.get('status') == 'success' else "✗"
-                    text += f"  {status_icon} {idx}. {step.get('step_name', 'Unknown')}"
-                    text += f" - {step.get('response_time_ms', 0):.0f}ms\n"
+            total_assertions = sum(s.get('assertions_passed', 0) + s.get('assertions_failed', 0) for s in steps)
+            passed_assertions = sum(s.get('assertions_passed', 0) for s in steps)
+            failed_assertions = sum(s.get('assertions_failed', 0) for s in steps)
+            
+            # Clear and prepare left panel
+            analysis_content.clear()
+            
+            # Header
+            analysis_content.write("╔═ RESULT ANALYSIS ══════════════════════════════╗")
+            analysis_content.write(f"{scenario_result.get('scenario_name', 'Test')}")
+            analysis_content.write("")
+            
+            status_emoji = "✓" if scenario_result.get('status') == 'success' else "✗"
+            analysis_content.write(f"{status_emoji} Status: {scenario_result.get('status', 'unknown').upper()}")
+            analysis_content.write(f"⏱  Duration: {scenario_result.get('duration_seconds', 0):.3f}s")
+            analysis_content.write(f"📅 Time: {result_data.get('created_at', 'N/A')}")
+            analysis_content.write("")
+            
+            # Request Summary
+            analysis_content.write("═══ REQUEST SUMMARY ═══")
+            analysis_content.write(f"Total Requests:    {scenario_result.get('total_requests', 0)}")
+            analysis_content.write(f"✓ Successful:      {scenario_result.get('successful_requests', 0)}")
+            analysis_content.write(f"✗ Failed:          {scenario_result.get('failed_requests', 0)}")
+            analysis_content.write(f"⚠ Errors:          {scenario_result.get('error_requests', 0)}")
+            analysis_content.write("")
+            
+            # Response Time Metrics
+            analysis_content.write("═══ RESPONSE TIME METRICS ═══")
+            analysis_content.write(f"Average:           {avg_response:.2f}ms")
+            analysis_content.write(f"Min:               {min_response:.2f}ms")
+            analysis_content.write(f"Max:               {max_response:.2f}ms")
+            analysis_content.write(f"P50 (median):      {p50:.2f}ms")
+            analysis_content.write(f"P95:               {p95:.2f}ms")
+            analysis_content.write(f"P99:               {p99:.2f}ms")
+            analysis_content.write("")
+            
+            # Assertion Results
+            analysis_content.write("═══ ASSERTION RESULTS ═══")
+            analysis_content.write(f"Total Assertions:  {total_assertions}")
+            analysis_content.write(f"✓ Passed:          {passed_assertions}")
+            analysis_content.write(f"✗ Failed:          {failed_assertions}")
+            analysis_content.write("")
+            
+            # Variables
+            variables = scenario_result.get('variables', {})
+            if variables:
+                analysis_content.write("═══ EXTRACTED VARIABLES ═══")
+                for key, value in variables.items():
+                    analysis_content.write(f"  {key:<20} = {value}")
+                analysis_content.write("")
+            
+            # Step Summary
+            analysis_content.write("═══ STEP SUMMARY ═══")
+            analysis_content.write("─" * 60)
+            analysis_content.write(f"{'#':<3} {'Step Name':<32} {'Status':<6} {'Time':<10}")
+            analysis_content.write("─" * 60)
+            
+            for idx, step in enumerate(steps, 1):
+                status_icon = "✓" if step.get('status') == 'success' else "✗"
+                step_name = step.get('step_name', 'Unknown')
+                if len(step_name) > 32:
+                    step_name = step_name[:29] + "..."
+                response_time = f"{step.get('response_time_ms', 0):.1f}ms"
+                analysis_content.write(f"{idx:<3} {step_name:<32} {status_icon:<6} {response_time:<10}")
+            
+            analysis_content.write("─" * 60)
+            analysis_content.write("")
+            analysis_content.write("Type 'back' to return to results list")
+            
+            # Clear right panel
+            api_flow.clear()
+            log_output.clear()
+            
+            # Generate UML in API visualizer
+            api_flow.write("╔" + "═" * 58 + "╗")
+            api_flow.write("║" + " " * 20 + "API FLOW DIAGRAM" + " " * 22 + "║")
+            api_flow.write("╚" + "═" * 58 + "╝")
+            api_flow.write("")
+            
+            for idx, step in enumerate(steps, 1):
+                status_icon = "✓" if step.get('status') == 'success' else "✗"
+                method = step.get('method', 'GET')
+                status_code = step.get('status_code', 'N/A')
+                response_time = step.get('response_time_ms', 0)
                 
-                if len(result_data['steps']) > 10:
-                    text += f"\n  ... and {len(result_data['steps']) - 10} more steps\n"
+                # Shorten step name
+                step_name = step.get('step_name', 'Step')
+                if len(step_name) > 35:
+                    step_name = step_name[:32] + "..."
+                
+                # Request
+                api_flow.write(f"[{idx}] {step_name}")
+                api_flow.write(f"    │")
+                api_flow.write(f"    ├─► {method}")
+                
+                # Response
+                api_flow.write(f"    │")
+                api_flow.write(f"    ◄─┤ [{status_icon}] {status_code} | {response_time:.1f}ms")
+                
+                # Assertions
+                if step.get('assertion_details'):
+                    passed = step.get('assertions_passed', 0)
+                    failed = step.get('assertions_failed', 0)
+                    api_flow.write(f"    │   ✓{passed} ✗{failed}")
+                
+                # Extracted variables
+                if step.get('extracted_variables'):
+                    vars_str = ", ".join(f"{k}={v}" for k, v in step['extracted_variables'].items())
+                    if len(vars_str) > 40:
+                        vars_str = vars_str[:37] + "..."
+                    api_flow.write(f"    │   Var: {vars_str}")
+                
+                api_flow.write(f"    │")
             
-            text += "\n" + "─" * 60 + "\n"
-            text += "\nType 'back' to return to results list\n"
+            api_flow.write("")
+            api_flow.write("✓ Flow completed")
             
-            content.update(text)
-            self.update_status(f"Viewing: {result_path}")
+            # Detailed logs
+            log_output.write("═" * 58)
+            log_output.write(f"STEP-BY-STEP DETAILS")
+            log_output.write("═" * 58)
+            log_output.write("")
+            
+            for idx, step in enumerate(steps, 1):
+                status_icon = "✓" if step.get('status') == 'success' else "✗"
+                
+                log_output.write("─" * 58)
+                log_output.write(f"{status_icon} [{idx}] {step.get('step_name', 'Unknown Step')}")
+                log_output.write("─" * 58)
+                
+                log_output.write(f"Method:      {step.get('method', 'GET')}")
+                url = step.get('url', 'N/A')
+                if len(url) > 50:
+                    url = url[:47] + "..."
+                log_output.write(f"URL:         {url}")
+                log_output.write(f"Status:      {step.get('status_code', 'N/A')}")
+                log_output.write(f"Time:        {step.get('response_time_ms', 0):.2f}ms")
+                
+                # Request body (compact)
+                if step.get('request_body'):
+                    log_output.write("")
+                    log_output.write("Request:")
+                    import json as json_lib
+                    body_str = json_lib.dumps(step['request_body'], indent=2)
+                    lines = body_str.split('\n')
+                    if len(lines) > 8:
+                        log_output.write('\n'.join(lines[:8]))
+                        log_output.write(f"  ... ({len(lines) - 8} lines)")
+                    else:
+                        log_output.write(body_str)
+                
+                # Response body (compact)
+                if step.get('response_body'):
+                    log_output.write("")
+                    log_output.write("Response:")
+                    import json as json_lib
+                    body_str = json_lib.dumps(step['response_body'], indent=2)
+                    lines = body_str.split('\n')
+                    if len(lines) > 10:
+                        log_output.write('\n'.join(lines[:10]))
+                        log_output.write(f"  ... ({len(lines) - 10} lines)")
+                    else:
+                        log_output.write(body_str)
+                
+                # Assertions
+                if step.get('assertion_details'):
+                    log_output.write("")
+                    log_output.write("Assertions:")
+                    for assertion in step['assertion_details']:
+                        icon = "✓" if assertion.get('passed') else "✗"
+                        msg = assertion.get('message', 'N/A')
+                        if len(msg) > 50:
+                            msg = msg[:47] + "..."
+                        log_output.write(f"  {icon} {msg}")
+                
+                # Extracted variables
+                if step.get('extracted_variables'):
+                    log_output.write("")
+                    log_output.write("Variables:")
+                    for key, value in step['extracted_variables'].items():
+                        log_output.write(f"  {key} = {value}")
+                
+                # Error message
+                if step.get('error_message'):
+                    log_output.write("")
+                    log_output.write(f"⚠ Error: {step['error_message']}")
+                
+                log_output.write("")
+            
+            log_output.write("═" * 58)
+            log_output.write("END OF LOG")
+            log_output.write("═" * 58)
+            
+            self.update_status(f"Analyzing: {result_path}")
             
             # Focus input
             self.query_one("#user_input", Input).focus()
             
         except Exception as e:
             self.show_error(f"Failed to load result: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def handle_uml_input(self, user_input: str):
         """Handle UML generation"""
@@ -653,23 +907,58 @@ class RestApiSimulatorApp(App):
     def generate_uml_for_scenario(self, scenario_name: str):
         """Generate UML diagrams for a scenario"""
         try:
-            uml_gen = UMLGenerator(self.current_project)
-            result = uml_gen.generate_from_scenario(scenario_name)
-            self.update_status(f"Generated UML for {scenario_name}: {result}")
+            from datetime import datetime
+            
+            # Load scenario
+            scenario = self.project_manager.load_scenario(self.current_project, scenario_name)
+            
+            # Generate diagrams
+            sequence = UMLGenerator.generate_sequence_diagram(scenario)
+            flowchart = UMLGenerator.generate_flowchart(scenario)
+            text_diagram = UMLGenerator.generate_text_diagram(scenario)
+            
+            # Save diagrams
+            date_str = datetime.now().strftime("%Y%m%d")
+            results_dir = self.project_manager.get_results_dir(self.current_project)
+            uml_dir = results_dir / "uml" / date_str
+            uml_dir.mkdir(parents=True, exist_ok=True)
+            
+            scenario_name_safe = scenario.name.replace(" ", "_").replace("/", "_")
+            UMLGenerator.save_diagram(sequence, str(uml_dir / f"{scenario_name_safe}_sequence.puml"))
+            UMLGenerator.save_diagram(flowchart, str(uml_dir / f"{scenario_name_safe}_flowchart.puml"))
+            UMLGenerator.save_diagram(text_diagram, str(uml_dir / f"{scenario_name_safe}_diagram.txt"))
+            
+            self.update_status(f"✓ Generated UML for {scenario_name} in {uml_dir}")
+            
+            # Show success in content area
+            content = self.query_one("#content_area", Static)
+            text = f"╔═ UML GENERATED - {scenario_name} ══════════════════╗\n\n"
+            text += f"✓ UML diagrams generated successfully!\n\n"
+            text += f"Location: {uml_dir}\n\n"
+            text += f"Files:\n"
+            text += f"  • {scenario_name_safe}_sequence.puml\n"
+            text += f"  • {scenario_name_safe}_flowchart.puml\n"
+            text += f"  • {scenario_name_safe}_diagram.txt\n\n"
+            text += "─" * 60 + "\n"
+            text += "\nYou can view these files with PlantUML viewer\n"
+            content.update(text)
+            
         except Exception as e:
             self.show_error(f"Failed to generate UML: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def show_scenario_detail(self, scenario_name: str):
         """Show scenario details"""
         import json
         
-        # Hide panels in detail view
-        log_panel = self.query_one("#log_panel")
-        api_visualizer = self.query_one("#api_visualizer")
-        log_panel.remove_class("visible")
-        api_visualizer.remove_class("visible")
+        # Hide analysis container
+        analysis_container = self.query_one("#analysis_container")
+        analysis_container.remove_class("visible")
         
+        # Show main content
         content = self.query_one("#content_area", Static)
+        content.display = True
         scenario_path = Path("projects") / self.current_project / "scenario" / f"{scenario_name}.json"
         
         try:
@@ -715,14 +1004,16 @@ class RestApiSimulatorApp(App):
         
         # Show panels and initialize
         def init_ui():
+            # Show main content during execution
             content = self.query_one("#content_area", Static)
-            log_panel = self.query_one("#log_panel")
+            content.display = True
+            
+            analysis_container = self.query_one("#analysis_container")
+            analysis_container.remove_class("visible")
+            
             log_output = self.query_one("#log_output", RichLog)
-            api_visualizer = self.query_one("#api_visualizer")
             api_flow = self.query_one("#api_flow", RichLog)
             
-            log_panel.add_class("visible")
-            api_visualizer.add_class("visible")
             log_output.clear()
             api_flow.clear()
             
@@ -878,6 +1169,51 @@ class RestApiSimulatorApp(App):
                 self.update_status(f"Test completed: {scenario_name}")
             
             update_ui(show_results)
+            
+            # Save report to results directory
+            try:
+                results_dir = self.project_manager.get_results_dir(self.current_project)
+                report_path = ReportGenerator.save_scenario_report(result, results_dir, self.current_project)
+                
+                def log_saved():
+                    log_output = self.query_one("#log_output", RichLog)
+                    log_output.write("")
+                    log_output.write(f"💾 Report saved: {report_path.name}")
+                update_ui(log_saved)
+                
+                # Generate UML diagrams
+                try:
+                    from datetime import datetime
+                    date_str = datetime.now().strftime("%Y%m%d")
+                    uml_dir = results_dir / "uml" / date_str
+                    uml_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Generate diagrams
+                    sequence = UMLGenerator.generate_sequence_diagram(scenario)
+                    flowchart = UMLGenerator.generate_flowchart(scenario)
+                    text_diagram = UMLGenerator.generate_text_diagram(scenario)
+                    
+                    # Save diagrams
+                    scenario_name_safe = scenario.name.replace(" ", "_").replace("/", "_")
+                    UMLGenerator.save_diagram(sequence, str(uml_dir / f"{scenario_name_safe}_sequence.puml"))
+                    UMLGenerator.save_diagram(flowchart, str(uml_dir / f"{scenario_name_safe}_flowchart.puml"))
+                    UMLGenerator.save_diagram(text_diagram, str(uml_dir / f"{scenario_name_safe}_diagram.txt"))
+                    
+                    def log_uml_saved():
+                        log_output = self.query_one("#log_output", RichLog)
+                        log_output.write(f"🎨 UML diagrams saved to: {uml_dir}")
+                    update_ui(log_uml_saved)
+                except Exception as uml_err:
+                    def log_uml_error():
+                        log_output = self.query_one("#log_output", RichLog)
+                        log_output.write(f"⚠️  Warning: Failed to generate UML: {str(uml_err)}")
+                    update_ui(log_uml_error)
+                
+            except Exception as save_err:
+                def log_save_error():
+                    log_output = self.query_one("#log_output", RichLog)
+                    log_output.write(f"⚠️  Warning: Failed to save report: {str(save_err)}")
+                update_ui(log_save_error)
             
         except Exception as e:
             def show_error_msg():

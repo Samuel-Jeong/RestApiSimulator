@@ -25,7 +25,6 @@ python main.py
 3. 키보드 단축키를 사용할 수 있습니다:
    - `p`: Projects
    - `s`: Scenarios
-   - `l`: Load Test
    - `r`: Results
    - `u`: UML
    - `q`: Quit
@@ -193,30 +192,11 @@ projects/
 ## 테스트 실행
 
 ### 시나리오 테스트
-1. Scenarios 메뉴 선택
-2. 실행할 시나리오 선택
-3. 테스트 시작
-4. 실시간 진행률 확인
-
-### TPS/부하 테스트
-1. Load Test 메뉴 선택
-2. 시나리오 선택
-3. 테스트 파라미터 설정:
-   - **Duration**: 테스트 지속 시간 (초)
-   - **Target TPS**: 목표 초당 트랜잭션 수
-   - **Ramp-up Time**: 부하 증가 시간 (초)
-   - **Max Concurrent**: 최대 동시 요청 수
-   - **Distribution**: 부하 분산 패턴
-     - `constant`: 일정한 부하
-     - `linear`: 선형 증가
-     - `exponential`: 지수 증가
-
-4. 테스트 시작
-5. 실시간 메트릭 모니터링:
-   - 현재 TPS
-   - 응답 시간 (평균, P50, P95, P99)
-   - 성공/실패율
-   - 에러 분포
+1. Scenarios 메뉴 선택 (Press S)
+2. 실행할 시나리오 번호 입력
+3. 'run' 명령으로 테스트 시작
+4. 실시간 진행률 및 결과 확인
+5. 테스트 완료 후 자동으로 결과 파일 저장
 
 ## 결과 분석
 
@@ -250,33 +230,9 @@ projects/
 }
 ```
 
-#### 부하 테스트 결과
-```json
-{
-  "report_id": "loadtest_performance_20231209_143022",
-  "test_type": "load_test",
-  "project_name": "example",
-  "load_test_result": {
-    "test_name": "Performance Test",
-    "duration_seconds": 60,
-    "target_tps": 100,
-    "actual_avg_tps": 98.5,
-    "total_requests": 5910,
-    "successful_requests": 5900,
-    "success_rate": 99.83,
-    "response_times": [...],
-    "metrics_timeline": [...]
-  }
-}
-```
-
 ### 메트릭 이해하기
 
-- **TPS (Transactions Per Second)**: 초당 처리된 트랜잭션 수
 - **Response Time**: 요청부터 응답까지 걸린 시간
-  - **P50 (중앙값)**: 50% 요청이 이 시간 이하
-  - **P95**: 95% 요청이 이 시간 이하
-  - **P99**: 99% 요청이 이 시간 이하
 - **Success Rate**: 성공한 요청의 비율
 - **Error Distribution**: 에러 유형별 분포
 
