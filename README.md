@@ -35,6 +35,120 @@ Python 기반 TUI(Text User Interface) 애플리케이션으로, REST API 테스
 24. **완전한 문서** - 사용자 가이드 및 API 레퍼런스
 25. **예제 프로젝트** - 즉시 사용 가능한 샘플
 
+
+## 전체 아키텍처(컴포넌트) 다이어그램
+```mermaid
+flowchart LR
+  subgraph UI["TUI (Textual)"]
+    APP["ui/app.py<br/>- 3단 레이아웃<br/>- Projects/Scenarios/Results/UML 메뉴"]
+    LOCK["utils/lock.py<br/>- PID 기반 중복 실행 방지"]
+  end
+
+  subgraph CORE["core (비즈니스 로직)"]
+    PM["project_manager.py<br/>- 프로젝트 생성/조회<br/>- 시나리오/호스트 로딩"]
+    SE["scenario_engine.py<br/>- 시나리오 실행 엔진<br/>- 변수 추출/치환<br/>- Step별 Assertion/Retry/Delay"]
+    LTE["load_test_engine.py<br/>- TPS 부하 테스트<br/>- ramp-up / 동시성 제한"]
+    HC["http_client.py<br/>- 비동기 HTTP 요청<br/>- timeout/headers/SSL 적용"]
+    AE["assertion_engine.py<br/>- 응답 검증(연산자 기반)"]
+    RG["report_generator.py<br/>- 결과 JSON 리포트<br/>- 타임라인/통계(P50/P95/P99 등)"]
+    UG["uml_generator.py<br/>- PlantUML + ASCII 다이어그램 생성"]
+  end
+
+  subgraph MODELS["models (데이터 모델)"]
+    CFG["config.py<br/>HostConfig/옵션"]
+    SCN["scenario.py<br/>Scenario/Step 모델"]
+    RES["result.py<br/>Result/Metric/Error 모델"]
+  end
+
+  subgraph FS["projects/{project}/... (파일 시스템)"]
+    HOSTS["config/hosts.json<br/>- base_url/timeout/headers/verify_ssl"]
+    SCEN["scenario/*.json<br/>- steps + (옵션) load_test_config"]
+    OUT["result/<br/>- 실행 결과 저장"]
+  end
+
+  APP --> LOCK
+  APP --> PM
+  PM --> HOSTS
+  PM --> SCEN
+
+  PM --> SE
+  SE --> HC
+  SE --> AE
+  SE --> RG
+
+  SCEN --> SCN
+  HOSTS --> CFG
+  SE --> RES
+
+  SCN --> LTE
+  LTE --> HC
+  LTE --> RG
+
+  APP --> UG
+  UG --> OUT
+  RG --> OUT
+```
+
+## “시나리오 실행” 흐름(변수 추출/치환 + Assertion)
+```mermaid
+flowchart TB
+  START["ScenarioEngine.execute_scenario(scenario)"] --> STEP["Step #i 로드"]
+  STEP --> REQ["요청 구성<br/>method + path + body"]
+  REQ --> VAR1["변수 치환<br/>예: /users/{{user_id}}"]
+  VAR1 --> SEND["HttpClient 요청 전송"]
+  SEND --> RESP["응답 수신<br/>status/headers/body"]
+  RESP --> ASSERT["AssertionEngine 검증<br/>예: status eq 200"]
+  ASSERT --> EXTRACT{"extract 설정?"}
+  EXTRACT -->|예| SAVE["변수 저장<br/>예: user_id = body.id"]
+  EXTRACT -->|아니오| NEXT
+  SAVE --> NEXT["다음 Step으로 진행"]
+  NEXT --> DONE{"마지막 Step?"}
+  DONE -->|아니오| STEP
+  DONE -->|예| REPORT["ReportGenerator 결과 리포트 생성<br/>JSON + 통계/타임라인"]
+```
+
+## “부하 테스트(TPS)” 실행 구조(목표 TPS + ramp-up + max_concurrent)
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as User
+  participant PM as ProjectManager
+  participant SE as ScenarioEngine
+  participant LTE as LoadTestEngine
+  participant HC as HttpClient
+  participant RG as ReportGenerator
+
+  U->>PM: 시나리오/호스트 로드
+  PM-->>SE: Scenario + HostConfig 전달
+  SE->>SE: load_test_config 존재 확인
+  alt load_test_config 없음
+    SE->>SE: 일반 시나리오 모드 실행
+  else load_test_config 있음
+    SE->>LTE: duration/target_tps/ramp_up/max_concurrent/distribution 설정
+    loop duration_seconds 동안
+      LTE->>LTE: 현재 목표 TPS 계산<br/>(ramp-up + distribution)
+      LTE->>HC: 비동기 요청 발행<br/>동시성(max_concurrent) 제한
+      HC-->>LTE: 응답/에러 수집
+      LTE-->>RG: 실시간 메트릭 업데이트<br/>TPS/Avg/P50/P95/P99/에러율
+    end
+    RG-->>SE: 최종 리포트 반환
+  end
+```
+
+## 프로젝트(프로젝트 단위) 파일 구조 다이어그램
+```mermaid
+flowchart TB
+  ROOT["RestApiSimulator/"] --> APP["app/<br/>core / models / ui / utils"]
+  ROOT --> PROJ["projects/"]
+  PROJ --> P1["{project_name}/"]
+  P1 --> C1["config/hosts.json"]
+  P1 --> S1["scenario/<br/>*.json (steps / load_test_config)"]
+  P1 --> R1["result/<br/>실행 결과 JSON 리포트"]
+  ROOT --> DOCS["docs/<br/>USER_GUIDE.md<br/>API_REFERENCE.md<br/>FEATURES.md"]
+  ROOT --> MAIN["main.py<br/>엔트리 포인트"]
+  ROOT --> QUICK["test_quick.py<br/>빠른 테스트"]
+```
+
 ## 설치
 
 ### 요구사항
