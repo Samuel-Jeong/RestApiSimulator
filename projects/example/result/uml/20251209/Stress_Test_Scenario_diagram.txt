@@ -1,0 +1,36 @@
+======================================================================
+  Scenario: Stress Test Scenario
+  Description: Rapid fire requests to test server under stress
+======================================================================
+
+[1] Get Posts
+    │
+    ├─► Method: GET
+    ├─► Path: /posts
+    ├─► Assertions: 1
+    │   • status eq 200
+    └─►
+        │
+        ▼
+
+[2] Get Comments
+    │
+    ├─► Method: GET
+    ├─► Path: /comments
+    ├─► Assertions: 1
+    │   • status eq 200
+    └─►
+        │
+        ▼
+
+[3] Get Stats
+    │
+    ├─► Method: GET
+    ├─► Path: /stats
+    ├─► Assertions: 1
+    │   • status eq 200
+    └─►
+
+======================================================================
+  Total Steps: 3
+======================================================================

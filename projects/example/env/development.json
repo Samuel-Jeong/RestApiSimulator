@@ -1,0 +1,13 @@
+{
+  "name": "development",
+  "variables": {
+    "base_url": "https://api.dev.example.com",
+    "api_key": "dev-api-key-123456",
+    "tenant_id": "tenant-dev-001",
+    "timeout": 30,
+    "max_retries": 3,
+    "user_id": 1,
+    "username": "dev_user",
+    "email": "dev@example.com"
+  }
+}

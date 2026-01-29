@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 from ..models.config import HostConfig
 from ..models.scenario import ScenarioStep, HttpMethod
+from ..utils.variable_resolver import VariableResolver
 
 
 class HttpClient:
@@ -46,7 +47,11 @@ class HttpClient:
         start_time = datetime.now()
         
         try:
-            async with httpx.AsyncClient(verify=self.verify_ssl) as client:
+            # Disable HTTP/2 to preserve header case sensitivity
+            async with httpx.AsyncClient(
+                verify=self.verify_ssl,
+                http2=False
+            ) as client:
                 response = await client.request(
                     method=method.upper(),
                     url=url,
@@ -86,22 +91,28 @@ class HttpClient:
         self,
         step: ScenarioStep,
         variables: Optional[Dict[str, Any]] = None
-    ) -> Tuple[int, Dict[str, str], Any, float]:
-        """Execute a scenario step with variable substitution"""
+    ) -> Tuple[int, Dict[str, str], Any, float, Dict[str, Any], Dict[str, Any], Any]:
+        """Execute a scenario step with variable substitution
+        
+        Returns:
+            Tuple of (status_code, response_headers, response_body, response_time_ms, 
+                     resolved_headers, resolved_query_params, resolved_body)
+        """
         
         # Apply delay before
         if step.delay_before > 0:
             await asyncio.sleep(step.delay_before)
         
-        # Substitute variables in path, headers, params, body
+        # Substitute variables in path, headers, params, body using VariableResolver
         context = variables or {}
+        resolver = VariableResolver(context)
         
-        path = self._substitute_variables(step.path, context)
-        headers = self._substitute_dict(step.headers, context) if step.headers else None
-        query_params = self._substitute_dict(step.query_params, context) if step.query_params else None
-        body = self._substitute_value(step.body, context) if step.body is not None else None
+        path = resolver.resolve(step.path)
+        headers = resolver.resolve(step.headers) if step.headers else None
+        query_params = resolver.resolve(step.query_params) if step.query_params else None
+        body = resolver.resolve(step.body) if step.body is not None else None
         
-        result = await self.execute_request(
+        status_code, response_headers, response_body, response_time_ms = await self.execute_request(
             method=step.method.value,
             path=path,
             headers=headers,
@@ -114,7 +125,9 @@ class HttpClient:
         if step.delay_after > 0:
             await asyncio.sleep(step.delay_after)
         
-        return result
+        # Return both response and resolved request data
+        return (status_code, response_headers, response_body, response_time_ms, 
+                headers or {}, query_params or {}, body)
     
     def _substitute_variables(self, text: str, context: Dict[str, Any]) -> str:
         """Substitute variables in text using {{variable}} syntax"""

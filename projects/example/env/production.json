@@ -1,0 +1,13 @@
+{
+  "name": "production",
+  "variables": {
+    "base_url": "https://api.example.com",
+    "api_key": "prod-api-key-secure-789",
+    "tenant_id": "tenant-prod-001",
+    "timeout": 60,
+    "max_retries": 5,
+    "user_id": 100,
+    "username": "prod_user",
+    "email": "prod@example.com"
+  }
+}

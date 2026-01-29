@@ -82,9 +82,15 @@ class Scenario(BaseModel):
     name: str = Field(..., description="Scenario name")
     description: Optional[str] = Field(default=None, description="Scenario description")
     host: Optional[str] = Field(default=None, description="Host to use (default if not specified)")
+    environment: Optional[str] = Field(default=None, description="Environment to use (e.g., 'development', 'production')")
+    pre_request_scripts: Optional[List[str]] = Field(
+        default=None, 
+        description="List of pre-request script/config files to execute (e.g., ['wpm-get-user-info.json'])"
+    )
     variables: Optional[Dict[str, Any]] = Field(default=None, description="Scenario variables")
     steps: List[ScenarioStep] = Field(..., description="Scenario steps", min_length=1)
     tags: List[str] = Field(default_factory=list, description="Scenario tags")
+    continue_on_error: bool = Field(default=False, description="Continue execution even if assertions fail")
     load_test_config: Optional['LoadTestConfig'] = Field(
         default=None, 
         description="Optional load test configuration. If specified, scenario will run as load test."

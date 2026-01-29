@@ -24,8 +24,6 @@ htmlcov/
 .tox/
 .venv
 venv/
-ENV/
-env/
 .idea/
 .vscode/
 *.swp

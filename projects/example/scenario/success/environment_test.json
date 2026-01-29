@@ -1,0 +1,83 @@
+{
+  "name": "Environment Variables Test",
+  "description": "Test scenario using environment variables",
+  "host": "default",
+  "tags": ["environment", "variables", "example"],
+  "steps": [
+    {
+      "name": "Get User with Environment Variable",
+      "method": "GET",
+      "path": "/api/users/{{env.user_id}}",
+      "headers": {
+        "X-API-Key": "{{env.api_key}}",
+        "X-Tenant-ID": "{{env.tenant_id}}",
+        "X-Request-ID": "{{request_id}}"
+      },
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        },
+        {
+          "field": "body.id",
+          "operator": "eq",
+          "value": "{{env.user_id}}"
+        }
+      ]
+    },
+    {
+      "name": "Create Resource with Pre-request Token",
+      "method": "POST",
+      "path": "/api/resources",
+      "headers": {
+        "Authorization": "{{auth_token}}",
+        "X-API-Key": "{{env.api_key}}",
+        "X-Timestamp": "{{timestamp}}"
+      },
+      "body": {
+        "name": "Test Resource",
+        "owner": "{{env.username}}",
+        "created_at": "{{datetime}}",
+        "metadata": {
+          "environment": "{{env.name}}",
+          "tenant": "{{env.tenant_id}}"
+        }
+      },
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 201
+        },
+        {
+          "field": "body.id",
+          "operator": "exists"
+        }
+      ],
+      "extract": {
+        "resource_id": "body.id"
+      }
+    },
+    {
+      "name": "Update Resource with Dynamic URL",
+      "method": "PUT",
+      "path": "/api/resources/{{resource_id}}",
+      "headers": {
+        "Authorization": "{{auth_token}}",
+        "X-API-Key": "{{env.api_key}}"
+      },
+      "body": {
+        "name": "Updated Resource",
+        "updated_by": "{{test_username}}"
+      },
+      "assertions": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": 200
+        }
+      ]
+    }
+  ]
+}

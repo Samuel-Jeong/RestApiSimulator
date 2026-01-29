@@ -1,0 +1,35 @@
+{
+  "name": "Example Authentication Flow",
+  "description": "Get authentication token and user information",
+  "steps": [
+    {
+      "name": "Get Authentication Token",
+      "method": "POST",
+      "url": "{{env.base_url}}/api/v1/auth/login",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "username": "{{env.username}}",
+        "email": "{{env.email}}"
+      },
+      "extract": {
+        "auth_token": "data.token",
+        "user_id": "data.user.id",
+        "expires_at": "data.expiresAt"
+      }
+    },
+    {
+      "name": "Get User Profile",
+      "method": "GET",
+      "url": "{{env.base_url}}/api/v1/users/{{user_id}}/profile",
+      "headers": {
+        "Authorization": "Bearer {{auth_token}}"
+      },
+      "extract": {
+        "user_role": "data.role",
+        "user_department": "data.department"
+      }
+    }
+  ]
+}

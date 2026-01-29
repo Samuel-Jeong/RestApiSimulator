@@ -24,130 +24,18 @@ Python 기반 TUI(Text User Interface) 애플리케이션으로, REST API 테스
 13. **에러 분석** - 상세한 에러 추적 및 분류
 14. **시나리오 검증** - Pydantic 기반 자동 스키마 검증
 15. **변수 시스템** - 스텝 간 변수 전달 및 추출
-16. **Assertion 엔진** - 10가지 연산자로 응답 검증
-17. **재시도 메커니즘** - 스텝별 자동 재시도
-18. **조건부 실행** - 실패 시 스킵 옵션
-19. **딜레이 제어** - 요청 전/후 대기 시간
-20. **동시성 제어** - 최대 동시 요청 수 제한
-21. **다중 호스트** - 프로젝트당 여러 호스트 설정
-22. **템플릿 제공** - 예제 프로젝트 및 시나리오
-23. **상세 리포트** - 메트릭 타임라인 포함
-24. **완전한 문서** - 사용자 가이드 및 API 레퍼런스
-25. **예제 프로젝트** - 즉시 사용 가능한 샘플
-
-
-## 전체 아키텍처(컴포넌트) 다이어그램
-```mermaid
-flowchart LR
-  subgraph UI["TUI (Textual)"]
-    APP["ui/app.py<br/>- 3단 레이아웃<br/>- Projects/Scenarios/Results/UML 메뉴"]
-    LOCK["utils/lock.py<br/>- PID 기반 중복 실행 방지"]
-  end
-
-  subgraph CORE["core (비즈니스 로직)"]
-    PM["project_manager.py<br/>- 프로젝트 생성/조회<br/>- 시나리오/호스트 로딩"]
-    SE["scenario_engine.py<br/>- 시나리오 실행 엔진<br/>- 변수 추출/치환<br/>- Step별 Assertion/Retry/Delay"]
-    LTE["load_test_engine.py<br/>- TPS 부하 테스트<br/>- ramp-up / 동시성 제한"]
-    HC["http_client.py<br/>- 비동기 HTTP 요청<br/>- timeout/headers/SSL 적용"]
-    AE["assertion_engine.py<br/>- 응답 검증(연산자 기반)"]
-    RG["report_generator.py<br/>- 결과 JSON 리포트<br/>- 타임라인/통계(P50/P95/P99 등)"]
-    UG["uml_generator.py<br/>- PlantUML + ASCII 다이어그램 생성"]
-  end
-
-  subgraph MODELS["models (데이터 모델)"]
-    CFG["config.py<br/>HostConfig/옵션"]
-    SCN["scenario.py<br/>Scenario/Step 모델"]
-    RES["result.py<br/>Result/Metric/Error 모델"]
-  end
-
-  subgraph FS["projects/{project}/... (파일 시스템)"]
-    HOSTS["config/hosts.json<br/>- base_url/timeout/headers/verify_ssl"]
-    SCEN["scenario/*.json<br/>- steps + (옵션) load_test_config"]
-    OUT["result/<br/>- 실행 결과 저장"]
-  end
-
-  APP --> LOCK
-  APP --> PM
-  PM --> HOSTS
-  PM --> SCEN
-
-  PM --> SE
-  SE --> HC
-  SE --> AE
-  SE --> RG
-
-  SCEN --> SCN
-  HOSTS --> CFG
-  SE --> RES
-
-  SCN --> LTE
-  LTE --> HC
-  LTE --> RG
-
-  APP --> UG
-  UG --> OUT
-  RG --> OUT
-```
-
-## “시나리오 실행” 흐름(변수 추출/치환 + Assertion)
-```mermaid
-flowchart TB
-  START["ScenarioEngine.execute_scenario(scenario)"] --> STEP["Step #i 로드"]
-  STEP --> REQ["요청 구성<br/>method + path + body"]
-  REQ --> VAR1["변수 치환<br/>예: /users/{{user_id}}"]
-  VAR1 --> SEND["HttpClient 요청 전송"]
-  SEND --> RESP["응답 수신<br/>status/headers/body"]
-  RESP --> ASSERT["AssertionEngine 검증<br/>예: status eq 200"]
-  ASSERT --> EXTRACT{"extract 설정?"}
-  EXTRACT -->|예| SAVE["변수 저장<br/>예: user_id = body.id"]
-  EXTRACT -->|아니오| NEXT
-  SAVE --> NEXT["다음 Step으로 진행"]
-  NEXT --> DONE{"마지막 Step?"}
-  DONE -->|아니오| STEP
-  DONE -->|예| REPORT["ReportGenerator 결과 리포트 생성<br/>JSON + 통계/타임라인"]
-```
-
-## “부하 테스트(TPS)” 실행 구조(목표 TPS + ramp-up + max_concurrent)
-```mermaid
-sequenceDiagram
-  autonumber
-  participant U as User
-  participant PM as ProjectManager
-  participant SE as ScenarioEngine
-  participant LTE as LoadTestEngine
-  participant HC as HttpClient
-  participant RG as ReportGenerator
-
-  U->>PM: 시나리오/호스트 로드
-  PM-->>SE: Scenario + HostConfig 전달
-  SE->>SE: load_test_config 존재 확인
-  alt load_test_config 없음
-    SE->>SE: 일반 시나리오 모드 실행
-  else load_test_config 있음
-    SE->>LTE: duration/target_tps/ramp_up/max_concurrent/distribution 설정
-    loop duration_seconds 동안
-      LTE->>LTE: 현재 목표 TPS 계산<br/>(ramp-up + distribution)
-      LTE->>HC: 비동기 요청 발행<br/>동시성(max_concurrent) 제한
-      HC-->>LTE: 응답/에러 수집
-      LTE-->>RG: 실시간 메트릭 업데이트<br/>TPS/Avg/P50/P95/P99/에러율
-    end
-    RG-->>SE: 최종 리포트 반환
-  end
-```
-
-## 프로젝트(프로젝트 단위) 파일 구조 다이어그램
-```mermaid
-flowchart TB
-  ROOT["RestApiSimulator/"] --> APP["app/<br/>core / models / ui / utils"]
-  ROOT --> PROJ["projects/"]
-  PROJ --> P1["{project_name}/"]
-  P1 --> C1["config/hosts.json"]
-  P1 --> S1["scenario/<br/>*.json (steps / load_test_config)"]
-  P1 --> R1["result/<br/>실행 결과 JSON 리포트"]
-  ROOT --> DOCS["docs/<br/>USER_GUIDE.md<br/>API_REFERENCE.md<br/>FEATURES.md"]
-  ROOT --> MAIN["main.py<br/>엔트리 포인트"]
-  ROOT --> QUICK["test_quick.py<br/>빠른 테스트"]
-```
+16. **환경 변수** - JSON 기반 환경별 설정 관리
+17. **Pre-request 스크립트** - JSON 기반 사전 요청 실행
+18. **Assertion 엔진** - 10가지 연산자로 응답 검증
+19. **재시도 메커니즘** - 스텝별 자동 재시도
+20. **조건부 실행** - 실패 시 스킵 옵션
+21. **딜레이 제어** - 요청 전/후 대기 시간
+22. **동시성 제어** - 최대 동시 요청 수 제한
+23. **다중 호스트** - 프로젝트당 여러 호스트 설정
+24. **템플릿 제공** - 예제 프로젝트 및 시나리오
+25. **상세 리포트** - 메트릭 타임라인 포함
+26. **완전한 문서** - 사용자 가이드 및 API 레퍼런스
+27. **예제 프로젝트** - 즉시 사용 가능한 샘플
 
 ## 설치
 
@@ -167,11 +55,26 @@ pip install -e .
 
 ## 실행
 
+### 권장 방법 (스크립트 사용)
 ```bash
+# 가상환경 자동 활성화 및 시뮬레이터 실행
+./run.sh
+```
+
+### 직접 실행
+```bash
+# 가상환경 활성화
+source venv/bin/activate
+
 # 메인 프로그램 실행
 python main.py
 
-# 빠른 테스트 실행
+# 또는 직접 실행
+python3 main.py
+```
+
+### 빠른 테스트
+```bash
 python test_quick.py
 ```
 
@@ -200,6 +103,11 @@ RestApiSimulator/
 │   └── example/                # 예제 프로젝트
 │       ├── config/
 │       │   └── hosts.json
+│       ├── env/                # 환경 변수
+│       │   ├── development.json
+│       │   └── production.json
+│       ├── package_library/    # Pre-request 스크립트
+│       │   └── pre_request.json
 │       ├── scenario/
 │       │   ├── user_crud.json
 │       │   ├── simple_get.json
@@ -233,18 +141,64 @@ python main.py
 1. Projects 메뉴 선택
 2. `new:<프로젝트명>` 입력
 
-### 3. 시나리오 작성
+### 3. 환경 변수 설정
+`projects/{project_name}/env/development.json`:
+
+```json
+{
+  "name": "development",
+  "variables": {
+    "base_url": "https://api.dev.example.com",
+    "api_key": "dev-api-key-123",
+    "user_id": 1
+  }
+}
+```
+
+### 4. Pre-request 스크립트
+`projects/{project_name}/package_library/pre_request.json`:
+
+```json
+{
+  "name": "Get Auth Token",
+  "description": "Fetch JWT token before test execution",
+  "steps": [
+    {
+      "name": "Login",
+      "method": "POST",
+      "url": "{{env.base_url}}/auth/login",
+      "body": {
+        "username": "test",
+        "password": "password"
+      },
+      "extract": {
+        "auth_token": "data.token"
+      }
+    }
+  ]
+}
+```
+
+### 5. 시나리오 작성
 `projects/{project_name}/scenario/` 폴더에 JSON 파일 생성:
 
 ```json
 {
   "name": "User CRUD Test",
+  "environment": "development",
+  "pre_request_scripts": ["pre_request.json"],
   "steps": [
     {
       "name": "Create User",
       "method": "POST",
       "path": "/users",
-      "body": {"name": "John"},
+      "headers": {
+        "Authorization": "Bearer {{auth_token}}"
+      },
+      "body": {
+        "name": "John",
+        "email": "john@example.com"
+      },
       "assertions": [
         {"field": "status", "operator": "eq", "value": 201}
       ],
@@ -254,15 +208,19 @@ python main.py
       "name": "Get User",
       "method": "GET",
       "path": "/users/{{user_id}}",
+      "headers": {
+        "Authorization": "Bearer {{auth_token}}"
+      },
       "assertions": [
-        {"field": "status", "operator": "eq", "value": 200}
+        {"field": "status", "operator": "eq", "value": 200},
+        {"field": "body.name", "operator": "eq", "value": "John"}
       ]
     }
   ]
 }
 ```
 
-### 4. 호스트 설정
+### 6. 호스트 설정
 `projects/{project_name}/config/hosts.json`:
 
 ```json
@@ -277,6 +235,19 @@ python main.py
   }
 }
 ```
+
+### 변수 치환 규칙
+
+시나리오에서 다음과 같은 변수를 사용할 수 있습니다:
+
+- `{{env.변수명}}` - 환경 파일 (`env/development.json`)의 변수
+- `{{변수명}}` - Pre-request에서 추출한 변수 또는 이전 스텝의 extract 변수
+- `{{scenario_변수명}}` - 시나리오 레벨에서 정의한 변수
+
+**실행 순서:**
+1. 환경 변수 로드
+2. Pre-request 스크립트 실행
+3. 시나리오 스텝 순차 실행
 
 ## 예제 실행
 
@@ -338,6 +309,16 @@ result = await engine.execute_scenario(scenario)
 - **[사용자 가이드](docs/USER_GUIDE.md)** - 상세한 사용 방법
 - **[API 레퍼런스](docs/API_REFERENCE.md)** - 프로그래밍 인터페이스
 - **[기능 목록](docs/FEATURES.md)** - 전체 기능 설명
+- **[환경 변수](docs/ENVIRONMENT.md)** - 환경 변수 관리
+- **[Pre-request 스크립트](docs/JSON_PRE_REQUEST.md)** - JSON 기반 Pre-request
+
+### 시나리오 자동 생성
+
+Java Spring Boot 컨트롤러에서 시나리오를 자동 생성하는 도구:
+
+- **[시나리오 생성기](scripts/scenario/README.md)** - 자동 생성 도구
+- **[생성기 사용법](scripts/scenario/USAGE.md)** - 상세 사용 방법
+- **[생성기 기능](scripts/scenario/FEATURES.md)** - 주요 기능
 
 ## 테스트
 
@@ -396,13 +377,24 @@ python test_quick.py
 ### 변수 시스템
 ```json
 {
+  "environment": "development",
+  "pre_request_scripts": ["auth.json"],
   "variables": {"base_url": "/api/v1"},
   "steps": [{
-    "path": "{{base_url}}/users",
+    "path": "{{env.api_base_url}}/users",
+    "headers": {
+      "Authorization": "Bearer {{auth_token}}"
+    },
     "extract": {"user_id": "body.id"}
   }]
 }
 ```
+
+**변수 우선순위 (높은 순서부터):**
+1. 이전 스텝의 extract 변수
+2. Pre-request 스크립트 결과
+3. 시나리오 variables
+4. 환경 변수 (env)
 
 ### 부하 분산 패턴
 - `constant` - 일정한 부하
@@ -450,9 +442,12 @@ REST API Simulator Team
 **완벽한 프로그램을 목표로 제작되었습니다**
 
 - 모든 요구사항 구현
-- 추가 기능 25개 이상
+- 추가 기능 27개 이상
 - 완전한 문서화
 - 예제 프로젝트 포함
 - 테스트 스크립트 제공
 - 버그 방지 설계
+- 환경 변수 관리
+- Pre-request 스크립트 지원
+- Java 컨트롤러 자동 시나리오 생성
 

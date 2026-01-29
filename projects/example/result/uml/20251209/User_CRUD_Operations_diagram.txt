@@ -1,0 +1,92 @@
+======================================================================
+  Scenario: User CRUD Operations
+  Description: Complete CRUD test for user management API on local dummy server
+======================================================================
+
+[1] Create New User
+    │
+    ├─► Method: POST
+    ├─► Path: /users
+    ├─► Body: 102 bytes
+    ├─► Assertions: 4
+    │   • status eq 201
+    │   • body.id exists None
+    │   • body.name eq John Doe
+    │   • body.created_at exists None
+    ├─► Extract Variables:
+    │   • user_id ← body.id
+    └─►
+        │
+        ▼
+
+[2] Get All Users
+    │
+    ├─► Method: GET
+    ├─► Path: /users
+    ├─► Delay Before: 0.3s
+    ├─► Assertions: 1
+    │   • status eq 200
+    └─►
+        │
+        ▼
+
+[3] Get User Details
+    │
+    ├─► Method: GET
+    ├─► Path: /users/{{user_id}}
+    ├─► Delay Before: 0.2s
+    ├─► Assertions: 3
+    │   • status eq 200
+    │   • body.id exists None
+    │   • body.username eq johndoe
+    └─►
+        │
+        ▼
+
+[4] Update User
+    │
+    ├─► Method: PUT
+    ├─► Path: /users/{{user_id}}
+    ├─► Body: 122 bytes
+    ├─► Assertions: 3
+    │   • status eq 200
+    │   • body.name eq John Doe Updated
+    │   • body.updated_at exists None
+    └─►
+        │
+        ▼
+
+[5] Verify User Updated
+    │
+    ├─► Method: GET
+    ├─► Path: /users/{{user_id}}
+    ├─► Delay Before: 0.2s
+    ├─► Assertions: 2
+    │   • status eq 200
+    │   • body.username eq johndoe_updated
+    └─►
+        │
+        ▼
+
+[6] Delete User
+    │
+    ├─► Method: DELETE
+    ├─► Path: /users/{{user_id}}
+    ├─► Assertions: 2
+    │   • status eq 200
+    │   • body.message contains deleted
+    └─►
+        │
+        ▼
+
+[7] Verify User Deleted
+    │
+    ├─► Method: GET
+    ├─► Path: /users/{{user_id}}
+    ├─► Assertions: 1
+    │   • status eq 404
+    └─►
+
+======================================================================
+  Total Steps: 7
+======================================================================

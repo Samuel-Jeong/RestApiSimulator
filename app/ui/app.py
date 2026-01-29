@@ -6,7 +6,10 @@ from textual.widgets import Header, Footer, Static, Button, Label, Input, RichLo
 from textual.binding import Binding
 from textual import work
 from pathlib import Path
+from typing import Dict, Any, Optional
 import asyncio
+import json
+import yaml
 from rich.text import Text
 from rich.panel import Panel
 
@@ -42,11 +45,15 @@ class RestApiSimulatorApp(App):
         width: 25;
         background: $panel;
         border-right: solid $primary;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
     }
     
     #content_panel {
         width: 1fr;
         padding: 1;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
     }
     
     #input_container {
@@ -113,18 +120,24 @@ class RestApiSimulatorApp(App):
         height: 100%;
         border: solid $primary;
         padding: 1;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
     }
     
     #uml_section {
         height: 50%;
         min-height: 20;
         max-height: 50%;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
     }
     
     #log_section {
         height: 50%;
         min-height: 20;
         max-height: 50%;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
     }
     
     .panel_title {
@@ -137,6 +150,11 @@ class RestApiSimulatorApp(App):
     
     Static {
         width: 100%;
+    }
+    
+    #content_area {
+        width: 100%;
+        height: auto;
     }
     """
     
@@ -153,9 +171,19 @@ class RestApiSimulatorApp(App):
         self.project_manager = ProjectManager()
         self.current_project = None
         self.current_host_config = None
+        self.current_environment = None  # Selected environment
         self.log_widget = None
         self.current_screen = "welcome"  # Track current screen
         self.selected_scenario = None  # Track selected scenario
+        self._scenario_index_map = {}  # 번호 → 경로 매핑 (시나리오 트리 표시용)
+        self._results_index_map = {}  # 번호 → 경로 매핑 (결과 트리 표시용)
+        self.project_number_mapping = {}  # 번호 → 경로 매핑 (프로젝트 트리 표시용)
+        self.current_result_data = {
+            "analysis": [],
+            "api_flow": [],
+            "log": [],
+            "result_path": None
+        }  # Store current result data for export
     
     def compose(self) -> ComposeResult:
         """Create child widgets"""
@@ -258,6 +286,56 @@ class RestApiSimulatorApp(App):
         elif button_id == "btn_exit":
             self.exit()
     
+    def _render_project_tree(self, nodes: list, indent: int = 0, numbering: list = None) -> tuple[str, dict]:
+        """Render project tree structure
+        
+        Returns:
+            tuple: (rendered_text, number_to_path_mapping)
+        """
+        if numbering is None:
+            numbering = [0]  # Use list to maintain reference
+        
+        text = ""
+        mapping = {}
+        
+        for i, node in enumerate(nodes):
+            is_last = (i == len(nodes) - 1)
+            
+            # Tree characters
+            if indent == 0:
+                prefix = ""
+                branch = ""
+            else:
+                prefix = "  " * (indent - 1)
+                branch = "└─ " if is_last else "├─ "
+            
+            # Only number projects (not intermediate folders)
+            if node["is_project"]:
+                numbering[0] += 1
+                number_str = f"{numbering[0]}. "
+                mapping[numbering[0]] = node["full_path"]
+                marker = "▶ " if node["full_path"] == self.current_project else "  "
+            else:
+                number_str = ""
+                marker = "  "
+            
+            # Project marker
+            icon = "📁 " if node["is_project"] else "📂 "
+            
+            text += f"{marker}{prefix}{branch}{number_str}{icon}{node['name']}\n"
+            
+            # Recursively render children
+            if node["children"]:
+                child_text, child_mapping = self._render_project_tree(
+                    node["children"], 
+                    indent + 1, 
+                    numbering
+                )
+                text += child_text
+                mapping.update(child_mapping)
+        
+        return text, mapping
+    
     def show_projects_screen(self):
         """Show projects management screen"""
         self.current_screen = "projects"
@@ -270,22 +348,43 @@ class RestApiSimulatorApp(App):
         content = self.query_one("#content_area", Static)
         content.display = True
         
-        projects = self.project_manager.list_projects()
+        projects_tree = self.project_manager.get_projects_tree()
         
         text = "╔═ PROJECT MANAGEMENT ═══════════════════════════════════╗\n\n"
         
-        if projects:
+        if projects_tree:
             text += "Available Projects:\n\n"
-            for idx, project in enumerate(projects, 1):
-                marker = "▶" if project == self.current_project else " "
-                text += f"{marker} {idx}. {project}\n"
+            tree_text, self.project_number_mapping = self._render_project_tree(projects_tree)
+            text += tree_text
         else:
             text += "No projects found. Create a new project to get started.\n"
+            self.project_number_mapping = {}
         
         text += "\n" + "─" * 60 + "\n"
+        
+        # Show current project details if selected
+        if self.current_project:
+            text += f"\nCurrent Project: {self.current_project}\n"
+            
+            # Show available environments
+            envs = self.project_manager.list_environments(self.current_project)
+            if envs:
+                text += f"Environments: {', '.join(envs)}\n"
+                if self.current_environment:
+                    text += f"Selected Environment: {self.current_environment.name}\n"
+            
+            # Show available hosts
+            hosts = self.project_manager.list_host_configs(self.current_project)
+            if hosts:
+                text += f"Hosts: {', '.join(hosts)}\n"
+                if self.current_host_config:
+                    text += f"Selected Host: {self.current_host_config.name}\n"
+        
         text += "\nActions:\n"
         text += "• Type project number or name to select\n"
         text += "• Type 'new:<name>' to create new project\n"
+        text += "• Type 'env:<name>' to select environment\n"
+        text += "• Type 'host:<name>' to select host\n"
         
         content.update(text)
         self.update_status("Projects screen")
@@ -309,24 +408,60 @@ class RestApiSimulatorApp(App):
         content = self.query_one("#content_area", Static)
         content.display = True
         
+        # Get scenario tree structure
+        scenario_tree = self.project_manager.get_scenario_tree(self.current_project)
         scenarios = self.project_manager.list_scenarios(self.current_project)
         
         text = f"╔═ SCENARIOS - {self.current_project} ═══════════════════════╗\n\n"
         
         if scenarios:
             text += "Available Scenarios:\n\n"
-            for idx, scenario in enumerate(scenarios, 1):
-                text += f"  {idx}. {scenario}\n"
+            
+            # Display tree structure
+            self._scenario_index_map = {}  # 번호 → 경로 매핑
+            counter = [1]  # mutable counter for nested function
+            
+            def print_tree(node: dict, prefix: str = "", is_last: bool = True):
+                """Recursively print tree structure"""
+                nonlocal text
+                
+                if node['type'] == 'folder' and node['path'] != '':
+                    # 폴더 표시
+                    connector = "└── " if is_last else "├── "
+                    text += f"{prefix}{connector}📁 {node['name']}/\n"
+                    new_prefix = prefix + ("    " if is_last else "│   ")
+                    
+                    children = node.get('children', [])
+                    for i, child in enumerate(children):
+                        print_tree(child, new_prefix, i == len(children) - 1)
+                
+                elif node['type'] == 'file':
+                    # 파일 표시
+                    connector = "└── " if is_last else "├── "
+                    idx = counter[0]
+                    text += f"{prefix}{connector}[{idx:2d}] 📄 {node['name']}\n"
+                    self._scenario_index_map[idx] = node['path']
+                    counter[0] += 1
+                
+                elif node['type'] == 'folder' and node['path'] == '':
+                    # 루트 폴더 - 자식들만 표시
+                    children = node.get('children', [])
+                    for i, child in enumerate(children):
+                        print_tree(child, "", i == len(children) - 1)
+            
+            print_tree(scenario_tree)
+            
         else:
             text += "No scenarios found in this project.\n"
         
         text += "\n" + "─" * 60 + "\n"
         text += "\nActions:\n"
-        text += "• Type scenario number or name to view/run\n"
+        text += "• Type scenario number to view/run\n"
+        text += "• Type scenario path (e.g., 'success/test_api') to run\n"
         text += "• Type 'new:<name>' to create new scenario\n"
         
         content.update(text)
-        self.update_status(f"Scenarios | Project: {self.current_project}")
+        self.update_status(f"Scenarios: {len(scenarios)} files | Project: {self.current_project}")
         
         # Focus input
         self.query_one("#user_input", Input).focus()
@@ -348,24 +483,88 @@ class RestApiSimulatorApp(App):
         content = self.query_one("#content_area", Static)
         content.display = True
         
+        # Get results tree structure
+        results_tree = self.project_manager.get_results_tree(self.current_project)
         results = self.project_manager.list_results(self.current_project)
         
         text = f"╔═ TEST RESULTS - {self.current_project} ═══════════════════╗\n\n"
         
         if results:
-            text += "Recent Test Results:\n\n"
-            for idx, result in enumerate(results[:20], 1):  # Show last 20
-                text += f"  {idx}. {result}\n"
+            text += "Test Results by Folder:\n\n"
+            
+            # Display tree structure
+            self._results_index_map = {}  # 번호 → 경로 매핑
+            counter = [1]  # mutable counter for nested function
+            
+            def print_tree(node: dict, prefix: str = "", is_last: bool = True):
+                """Recursively print tree structure"""
+                nonlocal text
+                
+                if node['type'] == 'folder' and node['path'] != '':
+                    # 폴더 표시 (날짜 폴더, scenarios, loadtests 등)
+                    connector = "└── " if is_last else "├── "
+                    folder_icon = "📅 " if node['name'].isdigit() and len(node['name']) == 8 else "📁 "
+                    
+                    # 폴더 타입 추가 정보
+                    folder_label = node['name']
+                    if node['name'] == 'scenarios':
+                        folder_label = f"{node['name']} (Scenario Tests)"
+                    elif node['name'] == 'loadtests':
+                        folder_label = f"{node['name']} (Load Tests)"
+                    
+                    text += f"{prefix}{connector}{folder_icon}{folder_label}\n"
+                    new_prefix = prefix + ("    " if is_last else "│   ")
+                    
+                    children = node.get('children', [])
+                    for i, child in enumerate(children):
+                        print_tree(child, new_prefix, i == len(children) - 1)
+                
+                elif node['type'] == 'file':
+                    # 파일 표시
+                    connector = "└── " if is_last else "├── "
+                    idx = counter[0]
+                    
+                    # Test type icon
+                    if node.get('test_type') == 'scenario':
+                        icon = "📄 "
+                    elif node.get('test_type') == 'loadtest':
+                        icon = "⚡ "
+                    else:
+                        icon = "📋 "
+                    
+                    # File size
+                    size_kb = node.get('size', 0) / 1024
+                    size_str = f"{size_kb:.1f}KB" if size_kb < 1024 else f"{size_kb/1024:.1f}MB"
+                    
+                    # Truncate long names
+                    display_name = node['name']
+                    if len(display_name) > 50:
+                        display_name = display_name[:47] + "..."
+                    
+                    text += f"{prefix}{connector}[{idx:2d}] {icon}{display_name} ({size_str})\n"
+                    self._results_index_map[idx] = node['path']
+                    counter[0] += 1
+                
+                elif node['type'] == 'folder' and node['path'] == '':
+                    # 루트 폴더 - 자식들만 표시
+                    children = node.get('children', [])
+                    for i, child in enumerate(children):
+                        print_tree(child, "", i == len(children) - 1)
+            
+            print_tree(results_tree)
+            
+            text += f"\n📊 Total: {len(results)} result files\n"
         else:
             text += "No test results found.\n"
             text += "\nRun some scenarios to generate results.\n"
         
         text += "\n" + "─" * 60 + "\n"
-        text += "\nType result number to view details\n"
-        text += "Example: 1 (to view first result)\n"
+        text += "\nActions:\n"
+        text += "• Type result number to view details\n"
+        text += "• Type 'all' to list all results (flat view)\n"
         
         content.update(text)
-        self.update_status(f"Results | Project: {self.current_project}")
+        self.update_status(f"Results: {len(results)} files | Project: {self.current_project}")
         
         # Focus input
         self.query_one("#user_input", Input).focus()
@@ -428,7 +627,10 @@ class RestApiSimulatorApp(App):
         if self.current_project:
             text += f"• Current Project: {self.current_project}\n"
             
-            hosts = self.project_manager.load_hosts_config(self.current_project)
+            hosts = self.project_manager.load_hosts_config(
+                self.current_project, 
+                self.current_environment
+            )
             text += f"• Configured Hosts: {len(hosts)}\n"
             
             for name, config in hosts.items():
@@ -503,6 +705,42 @@ class RestApiSimulatorApp(App):
         """Handle project selection/creation"""
         projects = self.project_manager.list_projects()
         
+        # Check if selecting environment
+        if user_input.startswith("env:"):
+            if not self.current_project:
+                self.show_error("Please select a project first")
+                return
+            
+            env_name = user_input[4:].strip()
+            environment = self.project_manager.load_environment(self.current_project, env_name)
+            if environment:
+                self.current_environment = environment
+                self.update_status(f"Selected environment: {env_name}")
+                self.show_projects_screen()
+            else:
+                self.show_error(f"Environment not found: {env_name}")
+            return
+        
+        # Check if selecting host
+        if user_input.startswith("host:"):
+            if not self.current_project:
+                self.show_error("Please select a project first")
+                return
+            
+            host_name = user_input[5:].strip()
+            host_config = self.project_manager.load_host_config(
+                self.current_project, 
+                host_name,
+                self.current_environment
+            )
+            if host_config:
+                self.current_host_config = host_config
+                self.update_status(f"Selected host: {host_name}")
+                self.show_projects_screen()
+            else:
+                self.show_error(f"Host not found: {host_name}")
+            return
+        
         # Check if creating new project
         if user_input.startswith("new:"):
             project_name = user_input[4:].strip()
@@ -517,9 +755,9 @@ class RestApiSimulatorApp(App):
         
         # Check if number input
         if user_input.isdigit():
-            idx = int(user_input) - 1
-            if 0 <= idx < len(projects):
-                self.current_project = projects[idx]
+            num = int(user_input)
+            if num in self.project_number_mapping:
+                self.current_project = self.project_number_mapping[num]
                 self.update_status(f"Selected project: {self.current_project}")
                 self.show_projects_screen()
             else:
@@ -562,8 +800,8 @@ class RestApiSimulatorApp(App):
         if user_input.startswith("new:"):
             scenario_name = user_input[4:].strip()
             if scenario_name:
-                # Create basic scenario file
-                scenario_path = Path("projects") / self.current_project / "scenario" / f"{scenario_name}.json"
+                # Create basic scenario file (YAML format)
+                scenario_path = Path("projects") / self.current_project / "scenario" / f"{scenario_name}.yaml"
                 scenario_path.parent.mkdir(parents=True, exist_ok=True)
                 
                 basic_scenario = {
@@ -572,9 +810,8 @@ class RestApiSimulatorApp(App):
                     "steps": []
                 }
                 
-                import json
-                with open(scenario_path, 'w') as f:
-                    json.dump(basic_scenario, f, indent=2)
+                with open(scenario_path, 'w', encoding='utf-8') as f:
+                    yaml.dump(basic_scenario, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
                 
                 self.update_status(f"Created scenario: {scenario_name}")
                 self.show_scenarios_screen()
@@ -582,18 +819,18 @@ class RestApiSimulatorApp(App):
                 self.show_error("Scenario name cannot be empty")
             return
         
-        # Check if number input
+        # Check if number input (using index map from tree display)
         if user_input.isdigit():
-            idx = int(user_input) - 1
-            if 0 <= idx < len(scenarios):
-                scenario_name = scenarios[idx]
+            num = int(user_input)
+            if hasattr(self, '_scenario_index_map') and num in self._scenario_index_map:
+                scenario_name = self._scenario_index_map[num]
                 self.selected_scenario = scenario_name
                 self.show_scenario_detail(scenario_name)
             else:
                 self.show_error(f"Invalid scenario number: {user_input}")
             return
         
-        # Check if scenario name
+        # Check if scenario name or path
         if user_input in scenarios:
             self.selected_scenario = user_input
             self.show_scenario_detail(user_input)
@@ -612,6 +849,11 @@ class RestApiSimulatorApp(App):
             self.show_error("No results available")
             return
         
+        # Check if export command
+        if user_input.lower() == "export":
+            self.export_result_data()
+            return
+        
         # Check if back command
         if user_input.lower() == "back":
             # Hide analysis container
@@ -620,22 +862,104 @@ class RestApiSimulatorApp(App):
             self.show_results_screen()
             return
         
-        # Check if number input
+        # Check if 'all' command for flat view
+        if user_input.lower() == "all":
+            self.show_results_flat_view()
+            return
+        
+        # Check if number input (using index map from tree display)
         if user_input.isdigit():
-            idx = int(user_input) - 1
-            if 0 <= idx < len(results):
-                result_path = results[idx]
+            num = int(user_input)
+            if hasattr(self, '_results_index_map') and num in self._results_index_map:
+                result_path = self._results_index_map[num]
                 self.show_result_detail(result_path)
             else:
-                self.show_error(f"Invalid result number: {user_input}")
+                # Fallback to old index-based method
+                idx = int(user_input) - 1
+                if 0 <= idx < len(results):
+                    result_path = results[idx]
+                    self.show_result_detail(result_path)
+                else:
+                    self.show_error(f"Invalid result number: {user_input}")
             return
         
         self.show_error(f"Unknown command: {user_input}")
     
+    def show_results_flat_view(self):
+        """Show results in flat list view"""
+        if not self.current_project:
+            self.show_error("No project selected")
+            return
+        
+        # Hide analysis container
+        analysis_container = self.query_one("#analysis_container")
+        analysis_container.remove_class("visible")
+        
+        # Show main content
+        content = self.query_one("#content_area", Static)
+        content.display = True
+        
+        results = self.project_manager.list_results(self.current_project)
+        
+        text = f"╔═ TEST RESULTS (Flat View) - {self.current_project} ═══════╗\n\n"
+        
+        if results:
+            text += f"All Test Results (Total: {len(results)}):\n\n"
+            
+            # Group by type
+            scenario_results = [r for r in results if 'scenario' in r.lower()]
+            loadtest_results = [r for r in results if 'loadtest' in r.lower()]
+            other_results = [r for r in results if r not in scenario_results and r not in loadtest_results]
+            
+            if scenario_results:
+                text += f"📄 Scenario Tests ({len(scenario_results)}):\n"
+                for idx, result in enumerate(scenario_results[:15], 1):
+                    text += f"  {idx}. {result}\n"
+                if len(scenario_results) > 15:
+                    text += f"  ... and {len(scenario_results) - 15} more\n"
+                text += "\n"
+            
+            if loadtest_results:
+                text += f"⚡ Load Tests ({len(loadtest_results)}):\n"
+                for idx, result in enumerate(loadtest_results[:10], len(scenario_results) + 1):
+                    text += f"  {idx}. {result}\n"
+                if len(loadtest_results) > 10:
+                    text += f"  ... and {len(loadtest_results) - 10} more\n"
+                text += "\n"
+            
+            if other_results:
+                text += f"📋 Other Results ({len(other_results)}):\n"
+                for idx, result in enumerate(other_results[:5], len(scenario_results) + len(loadtest_results) + 1):
+                    text += f"  {idx}. {result}\n"
+                text += "\n"
+            
+            # Create mapping for flat view
+            self._results_index_map = {i+1: path for i, path in enumerate(results)}
+        else:
+            text += "No test results found.\n"
+        
+        text += "\n" + "─" * 60 + "\n"
+        text += "\nActions:\n"
+        text += "• Type result number to view details\n"
+        text += "• Type 'back' to return to tree view\n"
+        
+        content.update(text)
+        self.update_status(f"Results (Flat View): {len(results)} files")
+        
+        # Focus input
+        self.query_one("#user_input", Input).focus()
+    
     def show_result_detail(self, result_path: str):
         """Show detailed result information"""
-        import json
         import statistics
+        
+        # Reset result data storage
+        self.current_result_data = {
+            "analysis": [],
+            "api_flow": [],
+            "log": [],
+            "result_path": result_path
+        }
         
         # Hide main content and show analysis container
         content = self.query_one("#content_area", Static)
@@ -692,55 +1016,68 @@ class RestApiSimulatorApp(App):
             # Clear and prepare left panel
             analysis_content.clear()
             
+            # Helper functions to write and store
+            def write_analysis(text):
+                analysis_content.write(text)
+                self.current_result_data["analysis"].append(text)
+            
+            def write_api_flow(text):
+                api_flow.write(text)
+                self.current_result_data["api_flow"].append(text)
+            
+            def write_log(text):
+                log_output.write(text)
+                self.current_result_data["log"].append(text)
+            
             # Header
-            analysis_content.write("╔═ RESULT ANALYSIS ══════════════════════════════╗")
-            analysis_content.write(f"{scenario_result.get('scenario_name', 'Test')}")
-            analysis_content.write("")
+            write_analysis("╔═ RESULT ANALYSIS ══════════════════════════════╗")
+            write_analysis(f"{scenario_result.get('scenario_name', 'Test')}")
+            write_analysis("")
             
             status_emoji = "✓" if scenario_result.get('status') == 'success' else "✗"
-            analysis_content.write(f"{status_emoji} Status: {scenario_result.get('status', 'unknown').upper()}")
-            analysis_content.write(f"⏱  Duration: {scenario_result.get('duration_seconds', 0):.3f}s")
-            analysis_content.write(f"📅 Time: {result_data.get('created_at', 'N/A')}")
-            analysis_content.write("")
+            write_analysis(f"{status_emoji} Status: {scenario_result.get('status', 'unknown').upper()}")
+            write_analysis(f"⏱  Duration: {scenario_result.get('duration_seconds', 0):.3f}s")
+            write_analysis(f"📅 Time: {result_data.get('created_at', 'N/A')}")
+            write_analysis("")
             
             # Request Summary
-            analysis_content.write("═══ REQUEST SUMMARY ═══")
-            analysis_content.write(f"Total Requests:    {scenario_result.get('total_requests', 0)}")
-            analysis_content.write(f"✓ Successful:      {scenario_result.get('successful_requests', 0)}")
-            analysis_content.write(f"✗ Failed:          {scenario_result.get('failed_requests', 0)}")
-            analysis_content.write(f"⚠ Errors:          {scenario_result.get('error_requests', 0)}")
-            analysis_content.write("")
+            write_analysis("═══ REQUEST SUMMARY ═══")
+            write_analysis(f"Total Requests:    {scenario_result.get('total_requests', 0)}")
+            write_analysis(f"✓ Successful:      {scenario_result.get('successful_requests', 0)}")
+            write_analysis(f"✗ Failed:          {scenario_result.get('failed_requests', 0)}")
+            write_analysis(f"⚠ Errors:          {scenario_result.get('error_requests', 0)}")
+            write_analysis("")
             
             # Response Time Metrics
-            analysis_content.write("═══ RESPONSE TIME METRICS ═══")
-            analysis_content.write(f"Average:           {avg_response:.2f}ms")
-            analysis_content.write(f"Min:               {min_response:.2f}ms")
-            analysis_content.write(f"Max:               {max_response:.2f}ms")
-            analysis_content.write(f"P50 (median):      {p50:.2f}ms")
-            analysis_content.write(f"P95:               {p95:.2f}ms")
-            analysis_content.write(f"P99:               {p99:.2f}ms")
-            analysis_content.write("")
+            write_analysis("═══ RESPONSE TIME METRICS ═══")
+            write_analysis(f"Average:           {avg_response:.2f}ms")
+            write_analysis(f"Min:               {min_response:.2f}ms")
+            write_analysis(f"Max:               {max_response:.2f}ms")
+            write_analysis(f"P50 (median):      {p50:.2f}ms")
+            write_analysis(f"P95:               {p95:.2f}ms")
+            write_analysis(f"P99:               {p99:.2f}ms")
+            write_analysis("")
             
             # Assertion Results
-            analysis_content.write("═══ ASSERTION RESULTS ═══")
-            analysis_content.write(f"Total Assertions:  {total_assertions}")
-            analysis_content.write(f"✓ Passed:          {passed_assertions}")
-            analysis_content.write(f"✗ Failed:          {failed_assertions}")
-            analysis_content.write("")
+            write_analysis("═══ ASSERTION RESULTS ═══")
+            write_analysis(f"Total Assertions:  {total_assertions}")
+            write_analysis(f"✓ Passed:          {passed_assertions}")
+            write_analysis(f"✗ Failed:          {failed_assertions}")
+            write_analysis("")
             
             # Variables
             variables = scenario_result.get('variables', {})
             if variables:
-                analysis_content.write("═══ EXTRACTED VARIABLES ═══")
+                write_analysis("═══ EXTRACTED VARIABLES ═══")
                 for key, value in variables.items():
-                    analysis_content.write(f"  {key:<20} = {value}")
-                analysis_content.write("")
+                    write_analysis(f"  {key:<20} = {value}")
+                write_analysis("")
             
             # Step Summary
-            analysis_content.write("═══ STEP SUMMARY ═══")
-            analysis_content.write("─" * 60)
-            analysis_content.write(f"{'#':<3} {'Step Name':<32} {'Status':<6} {'Time':<10}")
-            analysis_content.write("─" * 60)
+            write_analysis("═══ STEP SUMMARY ═══")
+            write_analysis("─" * 60)
+            write_analysis(f"{'#':<3} {'Step Name':<32} {'Status':<6} {'Time':<10}")
+            write_analysis("─" * 60)
             
             for idx, step in enumerate(steps, 1):
                 status_icon = "✓" if step.get('status') == 'success' else "✗"
@@ -748,21 +1085,21 @@ class RestApiSimulatorApp(App):
                 if len(step_name) > 32:
                     step_name = step_name[:29] + "..."
                 response_time = f"{step.get('response_time_ms', 0):.1f}ms"
-                analysis_content.write(f"{idx:<3} {step_name:<32} {status_icon:<6} {response_time:<10}")
+                write_analysis(f"{idx:<3} {step_name:<32} {status_icon:<6} {response_time:<10}")
             
-            analysis_content.write("─" * 60)
-            analysis_content.write("")
-            analysis_content.write("Type 'back' to return to results list")
+            write_analysis("─" * 60)
+            write_analysis("")
+            write_analysis("Type 'export' to save analysis to files")
             
             # Clear right panel
             api_flow.clear()
             log_output.clear()
             
             # Generate UML in API visualizer
-            api_flow.write("╔" + "═" * 58 + "╗")
-            api_flow.write("║" + " " * 20 + "API FLOW DIAGRAM" + " " * 22 + "║")
-            api_flow.write("╚" + "═" * 58 + "╝")
-            api_flow.write("")
+            write_api_flow("╔" + "═" * 58 + "╗")
+            write_api_flow("║" + " " * 20 + "API FLOW DIAGRAM" + " " * 22 + "║")
+            write_api_flow("╚" + "═" * 58 + "╝")
+            write_api_flow("")
             
             for idx, step in enumerate(steps, 1):
                 status_icon = "✓" if step.get('status') == 'success' else "✗"
@@ -776,107 +1113,129 @@ class RestApiSimulatorApp(App):
                     step_name = step_name[:32] + "..."
                 
                 # Request
-                api_flow.write(f"[{idx}] {step_name}")
-                api_flow.write(f"    │")
-                api_flow.write(f"    ├─► {method}")
+                write_api_flow(f"[{idx}] {step_name}")
+                write_api_flow(f"    │")
+                write_api_flow(f"    ├─► {method}")
                 
                 # Response
-                api_flow.write(f"    │")
-                api_flow.write(f"    ◄─┤ [{status_icon}] {status_code} | {response_time:.1f}ms")
+                write_api_flow(f"    │")
+                write_api_flow(f"    ◄─┤ [{status_icon}] {status_code} | {response_time:.1f}ms")
                 
                 # Assertions
                 if step.get('assertion_details'):
                     passed = step.get('assertions_passed', 0)
                     failed = step.get('assertions_failed', 0)
-                    api_flow.write(f"    │   ✓{passed} ✗{failed}")
+                    write_api_flow(f"    │   ✓{passed} ✗{failed}")
                 
                 # Extracted variables
                 if step.get('extracted_variables'):
                     vars_str = ", ".join(f"{k}={v}" for k, v in step['extracted_variables'].items())
                     if len(vars_str) > 40:
                         vars_str = vars_str[:37] + "..."
-                    api_flow.write(f"    │   Var: {vars_str}")
+                    write_api_flow(f"    │   Var: {vars_str}")
                 
-                api_flow.write(f"    │")
+                write_api_flow(f"    │")
             
-            api_flow.write("")
-            api_flow.write("✓ Flow completed")
+            write_api_flow("")
+            write_api_flow("✓ Flow completed")
             
             # Detailed logs
-            log_output.write("═" * 58)
-            log_output.write(f"STEP-BY-STEP DETAILS")
-            log_output.write("═" * 58)
-            log_output.write("")
+            write_log("═" * 58)
+            write_log(f"STEP-BY-STEP DETAILS")
+            write_log("═" * 58)
+            write_log("")
             
             for idx, step in enumerate(steps, 1):
                 status_icon = "✓" if step.get('status') == 'success' else "✗"
                 
-                log_output.write("─" * 58)
-                log_output.write(f"{status_icon} [{idx}] {step.get('step_name', 'Unknown Step')}")
-                log_output.write("─" * 58)
+                write_log("─" * 58)
+                write_log(f"{status_icon} [{idx}] {step.get('step_name', 'Unknown Step')}")
+                write_log("─" * 58)
                 
-                log_output.write(f"Method:      {step.get('method', 'GET')}")
+                write_log(f"Method:      {step.get('method', 'GET')}")
                 url = step.get('url', 'N/A')
-                if len(url) > 50:
-                    url = url[:47] + "..."
-                log_output.write(f"URL:         {url}")
-                log_output.write(f"Status:      {step.get('status_code', 'N/A')}")
-                log_output.write(f"Time:        {step.get('response_time_ms', 0):.2f}ms")
+                write_log(f"URL:         {url}")
+                write_log(f"Status:      {step.get('status_code', 'N/A')}")
+                write_log(f"Time:        {step.get('response_time_ms', 0):.2f}ms")
                 
                 # Request body (compact)
                 if step.get('request_body'):
-                    log_output.write("")
-                    log_output.write("Request:")
-                    import json as json_lib
-                    body_str = json_lib.dumps(step['request_body'], indent=2)
+                    write_log("")
+                    write_log("Request:")
+                    body_str = json.dumps(step['request_body'], indent=2)
                     lines = body_str.split('\n')
                     if len(lines) > 8:
-                        log_output.write('\n'.join(lines[:8]))
-                        log_output.write(f"  ... ({len(lines) - 8} lines)")
+                        for line in lines[:8]:
+                            write_log(line)
+                        write_log(f"  ... ({len(lines) - 8} lines)")
                     else:
-                        log_output.write(body_str)
+                        for line in lines:
+                            write_log(line)
                 
                 # Response body (compact)
                 if step.get('response_body'):
-                    log_output.write("")
-                    log_output.write("Response:")
-                    import json as json_lib
-                    body_str = json_lib.dumps(step['response_body'], indent=2)
+                    write_log("")
+                    write_log("Response:")
+                    body_str = json.dumps(step['response_body'], indent=2)
                     lines = body_str.split('\n')
                     if len(lines) > 10:
-                        log_output.write('\n'.join(lines[:10]))
-                        log_output.write(f"  ... ({len(lines) - 10} lines)")
+                        for line in lines[:10]:
+                            write_log(line)
+                        write_log(f"  ... ({len(lines) - 10} lines)")
                     else:
-                        log_output.write(body_str)
+                        for line in lines:
+                            write_log(line)
                 
                 # Assertions
                 if step.get('assertion_details'):
-                    log_output.write("")
-                    log_output.write("Assertions:")
+                    write_log("")
+                    write_log("Assertions:")
                     for assertion in step['assertion_details']:
                         icon = "✓" if assertion.get('passed') else "✗"
                         msg = assertion.get('message', 'N/A')
-                        if len(msg) > 50:
-                            msg = msg[:47] + "..."
-                        log_output.write(f"  {icon} {msg}")
+                        write_log(f"  {icon} {msg}")
                 
                 # Extracted variables
                 if step.get('extracted_variables'):
-                    log_output.write("")
-                    log_output.write("Variables:")
+                    write_log("")
+                    write_log("Variables:")
                     for key, value in step['extracted_variables'].items():
-                        log_output.write(f"  {key} = {value}")
+                        write_log(f"  {key} = {value}")
                 
-                # Error message
+                # Error message with clear indication
                 if step.get('error_message'):
-                    log_output.write("")
-                    log_output.write(f"⚠ Error: {step['error_message']}")
+                    write_log("")
+                    error_msg = step['error_message']
+                    
+                    # Check error type by prefix
+                    if '[PACKAGE_LIBRARY_ERROR]' in error_msg:
+                        write_log("=" * 58)
+                        write_log("❌ PACKAGE LIBRARY EXECUTION FAILED")
+                        write_log("=" * 58)
+                        # Remove prefix for cleaner display
+                        clean_msg = error_msg.replace('[PACKAGE_LIBRARY_ERROR]', '').strip()
+                        write_log(f"Error: {clean_msg}")
+                        write_log("=" * 58)
+                    elif '[API_REQUEST_ERROR]' in error_msg:
+                        # Remove prefix for cleaner display
+                        clean_msg = error_msg.replace('[API_REQUEST_ERROR]', '').strip()
+                        write_log(f"⚠ API Request Error: {clean_msg}")
+                    else:
+                        # Fallback for backward compatibility
+                        if 'package_library' in error_msg.lower() or 'pre-request' in error_msg.lower() or 'pre_request' in error_msg.lower():
+                            write_log("=" * 58)
+                            write_log("❌ PACKAGE LIBRARY EXECUTION FAILED")
+                            write_log("=" * 58)
+                            write_log(f"Error: {error_msg}")
+                            write_log("=" * 58)
+                        else:
+                            write_log(f"⚠ Error: {error_msg}")
                 
-                log_output.write("")
+                write_log("")
             
-            log_output.write("═" * 58)
-            log_output.write("END OF LOG")
-            log_output.write("═" * 58)
+            write_log("═" * 58)
+            write_log("END OF LOG")
+            write_log("═" * 58)
             
             self.update_status(f"Analyzing: {result_path}")
             
@@ -885,6 +1244,62 @@ class RestApiSimulatorApp(App):
             
         except Exception as e:
             self.show_error(f"Failed to load result: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    
+    def export_result_data(self):
+        """Export current result data to text files"""
+        from pathlib import Path
+        from datetime import datetime
+        
+        if not self.current_result_data.get("result_path"):
+            self.show_error("No result loaded to export")
+            return
+        
+        try:
+            # Get export directory with date organization
+            date_str = datetime.now().strftime("%Y%m%d")
+            export_dir = self.project_manager.get_results_dir(self.current_project) / "exports" / date_str
+            export_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate base filename from result path
+            result_path = self.current_result_data["result_path"]
+            base_name = Path(result_path).stem
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Export Analysis Data
+            analysis_file = export_dir / f"{base_name}_analysis_{timestamp}.txt"
+            with open(analysis_file, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(self.current_result_data["analysis"]))
+            
+            # Export API Flow Diagram
+            api_flow_file = export_dir / f"{base_name}_api_flow_{timestamp}.txt"
+            with open(api_flow_file, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(self.current_result_data["api_flow"]))
+            
+            # Export Detailed Log
+            log_file = export_dir / f"{base_name}_detailed_log_{timestamp}.txt"
+            with open(log_file, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(self.current_result_data["log"]))
+            
+            # Show success message
+            log_output = self.query_one("#log_output", RichLog)
+            log_output.write("")
+            log_output.write("═" * 58)
+            log_output.write("✓ EXPORT COMPLETED")
+            log_output.write("═" * 58)
+            log_output.write("")
+            log_output.write(f"Exported to: {export_dir}")
+            log_output.write("")
+            log_output.write(f"1. {analysis_file.name}")
+            log_output.write(f"2. {api_flow_file.name}")
+            log_output.write(f"3. {log_file.name}")
+            log_output.write("")
+            
+            self.update_status(f"✓ Exported 3 files to exports/{date_str}/")
+            
+        except Exception as e:
+            self.show_error(f"Export failed: {str(e)}")
             import traceback
             traceback.print_exc()
     
@@ -899,8 +1314,21 @@ class RestApiSimulatorApp(App):
         api_flow.clear()
         log_output.clear()
         
+        # Helper functions to write and store
+        def write_analysis(text):
+            analysis_content.write(text)
+            self.current_result_data["analysis"].append(text)
+        
+        def write_api_flow(text):
+            api_flow.write(text)
+            self.current_result_data["api_flow"].append(text)
+        
+        def write_log(text):
+            log_output.write(text)
+            self.current_result_data["log"].append(text)
+        
         # === LEFT PANEL: Analysis Data ===
-        analysis_content.write("╔═ LOAD TEST RESULT ANALYSIS ═══════════════════╗")
+        write_analysis("╔═ LOAD TEST RESULT ANALYSIS ═══════════════════╗")
         analysis_content.write(f"{load_result.get('test_name', 'Load Test')}")
         analysis_content.write("")
         
@@ -956,7 +1384,7 @@ class RestApiSimulatorApp(App):
         if error_dist:
             analysis_content.write("═══ ERROR DISTRIBUTION ═══")
             for error, count in sorted(error_dist.items(), key=lambda x: x[1], reverse=True)[:10]:
-                error_short = error[:50] + "..." if len(error) > 50 else error
+                error_short = error[:100] + "..." if len(error) > 100 else error
                 analysis_content.write(f"  {count:>4}x  {error_short}")
             if len(error_dist) > 10:
                 analysis_content.write(f"  ... and {len(error_dist) - 10} more errors")
@@ -1127,8 +1555,6 @@ class RestApiSimulatorApp(App):
     
     def show_scenario_detail(self, scenario_name: str):
         """Show scenario details"""
-        import json
-        
         # Hide analysis container
         analysis_container = self.query_one("#analysis_container")
         analysis_container.remove_class("visible")
@@ -1136,11 +1562,28 @@ class RestApiSimulatorApp(App):
         # Show main content
         content = self.query_one("#content_area", Static)
         content.display = True
-        scenario_path = Path("projects") / self.current_project / "scenario" / f"{scenario_name}.json"
+        
+        # Find scenario file (try yaml, yml, json)
+        base_path = Path("projects") / self.current_project / "scenario"
+        scenario_path = None
+        for ext in ['.yaml', '.yml', '.json']:
+            candidate = base_path / f"{scenario_name}{ext}"
+            if candidate.exists():
+                scenario_path = candidate
+                break
+        
+        if not scenario_path:
+            content.update(f"[red]Scenario file not found: {scenario_name}[/red]")
+            return
         
         try:
-            with open(scenario_path, 'r') as f:
-                scenario_data = json.load(f)
+            # Load based on extension
+            if scenario_path.suffix in ['.yaml', '.yml']:
+                with open(scenario_path, 'r', encoding='utf-8') as f:
+                    scenario_data = yaml.safe_load(f)
+            else:
+                with open(scenario_path, 'r') as f:
+                    scenario_data = json.load(f)
             
             text = f"╔═ SCENARIO DETAIL - {scenario_name} ═══════════════════════╗\n\n"
             text += f"Name: {scenario_data.get('name', scenario_name)}\n"
@@ -1203,8 +1646,24 @@ class RestApiSimulatorApp(App):
         update_ui(init_ui)
         
         try:
-            # Load hosts configuration
-            hosts = self.project_manager.load_hosts_config(self.current_project)
+            # Load scenario first to check if environment is needed
+            scenario = self.project_manager.load_scenario(self.current_project, scenario_name)
+            
+            # Load environment if scenario specifies one and not already loaded
+            if scenario.environment and not self.current_environment:
+                env = self.project_manager.load_environment(self.current_project, scenario.environment)
+                if env:
+                    self.current_environment = env
+                    def log_env_loaded():
+                        log_output = self.query_one("#log_output", RichLog)
+                        log_output.write(f"✓ Auto-loaded environment: {env.name}")
+                    update_ui(log_env_loaded)
+            
+            # Load hosts configuration with environment variable substitution
+            hosts = self.project_manager.load_hosts_config(
+                self.current_project, 
+                self.current_environment
+            )
             if not hosts:
                 def show_err():
                     self.show_error("No hosts configured in hosts.json")
@@ -1214,9 +1673,6 @@ class RestApiSimulatorApp(App):
             # Use first host by default
             host_name = list(hosts.keys())[0]
             host_config = hosts[host_name]
-            
-            # Load scenario
-            scenario = self.project_manager.load_scenario(self.current_project, scenario_name)
             
             # Update UI with host info
             def update_host_info():
@@ -1309,7 +1765,8 @@ class RestApiSimulatorApp(App):
                 
             else:
                 # Regular scenario mode
-                engine = ScenarioEngine(host_config)
+                project_path = str(self.project_manager.get_project_path(self.current_project))
+                engine = ScenarioEngine(host_config, project_path=project_path, environment=self.current_environment)
                 
                 # Progress callback
                 def on_progress(step_name: str, current: int, total: int):
@@ -1318,8 +1775,30 @@ class RestApiSimulatorApp(App):
                         log_output.write(f"Step {current}/{total}: {step_name}")
                     update_ui(update_progress)
                 
+                # Check for pre-request script/config
+                pre_request_script = None
+                if self.current_environment:
+                    # Look for pre_request.json or pre_request.py in package_library
+                    package_lib = self.project_manager.get_package_library_path(self.current_project)
+                    
+                    # Prefer JSON config over Python script
+                    if (package_lib / "pre_request.json").exists():
+                        pre_request_script = "pre_request.json"
+                    elif (package_lib / "pre_request.py").exists():
+                        pre_request_script = "pre_request.py"
+                    
+                    if pre_request_script:
+                        def log_pre_request():
+                            log_output = self.query_one("#log_output", RichLog)
+                            log_output.write(f"Environment: {self.current_environment.name}")
+                            log_output.write(f"")
+                            log_output.write(f"🔧 Package Library: {pre_request_script}")
+                            log_output.write(f"{'─'*60}")
+                            log_output.write("")
+                        update_ui(log_pre_request)
+                
                 # Execute scenario
-                result = asyncio.run(engine.execute_scenario(scenario, progress_callback=on_progress))
+                result = asyncio.run(engine.execute_scenario(scenario, progress_callback=on_progress, pre_request_script=pre_request_script))
             
             # Display results based on test type
             if scenario.load_test_config:
@@ -1455,7 +1934,20 @@ class RestApiSimulatorApp(App):
                             f"{status_icon} {idx}. {step.step_name} - {step.response_time_ms:.0f}ms (HTTP {step.status_code or 'N/A'})"
                         )
                         if step.error_message:
-                            log_output.write(f"   Error: {step.error_message}")
+                            error_msg = step.error_message
+                            # Check error type by prefix
+                            if '[PACKAGE_LIBRARY_ERROR]' in error_msg:
+                                clean_msg = error_msg.replace('[PACKAGE_LIBRARY_ERROR]', '').strip()
+                                log_output.write(f"   ❌ PACKAGE LIBRARY: {clean_msg}")
+                            elif '[API_REQUEST_ERROR]' in error_msg:
+                                clean_msg = error_msg.replace('[API_REQUEST_ERROR]', '').strip()
+                                log_output.write(f"   ⚠ API Error: {clean_msg}")
+                            else:
+                                # Fallback for backward compatibility
+                                if 'package_library' in error_msg.lower() or 'pre-request' in error_msg.lower() or 'pre_request' in error_msg.lower():
+                                    log_output.write(f"   ❌ PACKAGE LIBRARY: {error_msg}")
+                                else:
+                                    log_output.write(f"   ⚠ Error: {error_msg}")
                     
                     log_output.write("")
                     log_output.write("Summary:")
@@ -1541,7 +2033,74 @@ class RestApiSimulatorApp(App):
         except Exception as e:
             def show_error_msg():
                 log_output = self.query_one("#log_output", RichLog)
-                log_output.write(f"✗ Error: {str(e)}")
-                self.show_error(f"Test failed: {str(e)}")
+                content = self.query_one("#content_area", Static)
+                
+                error_str = str(e)
+                
+                # Check error type by prefix
+                if '[PACKAGE_LIBRARY_ERROR]' in error_str:
+                    clean_error = error_str.replace('[PACKAGE_LIBRARY_ERROR]', '').strip()
+                    
+                    log_output.write("")
+                    log_output.write("=" * 60)
+                    log_output.write("❌ PACKAGE LIBRARY EXECUTION FAILED")
+                    log_output.write("=" * 60)
+                    log_output.write(f"Error: {clean_error}")
+                    log_output.write("=" * 60)
+                    log_output.write("")
+                    
+                    text = f"╔═ TEST FAILED - {scenario_name} ════════════════════════╗\n\n"
+                    text += f"❌ Package Library Execution Failed\n\n"
+                    text += f"Error: {clean_error}\n\n"
+                    text += "─" * 60 + "\n"
+                    text += "\nPlease check:\n"
+                    text += "• Package library script/config syntax\n"
+                    text += "• Pre-request API endpoint availability\n"
+                    text += "• Environment variables\n"
+                    text += "• Authentication tokens\n"
+                    content.update(text)
+                    
+                elif '[API_REQUEST_ERROR]' in error_str:
+                    clean_error = error_str.replace('[API_REQUEST_ERROR]', '').strip()
+                    
+                    log_output.write(f"✗ API Request Error: {clean_error}")
+                    
+                    text = f"╔═ TEST FAILED - {scenario_name} ════════════════════════╗\n\n"
+                    text += f"❌ API Request Failed\n\n"
+                    text += f"Error: {clean_error}\n\n"
+                    text += "─" * 60 + "\n"
+                    content.update(text)
+                    
+                else:
+                    # Fallback for backward compatibility
+                    if 'package_library' in error_str.lower() or 'pre-request' in error_str.lower() or 'pre_request' in error_str.lower():
+                        log_output.write("")
+                        log_output.write("=" * 60)
+                        log_output.write("❌ PACKAGE LIBRARY EXECUTION FAILED")
+                        log_output.write("=" * 60)
+                        log_output.write(f"Error: {error_str}")
+                        log_output.write("=" * 60)
+                        log_output.write("")
+                        
+                        text = f"╔═ TEST FAILED - {scenario_name} ════════════════════════╗\n\n"
+                        text += f"❌ Package Library Execution Failed\n\n"
+                        text += f"Error: {error_str}\n\n"
+                        text += "─" * 60 + "\n"
+                        text += "\nPlease check:\n"
+                        text += "• Package library script/config syntax\n"
+                        text += "• Pre-request API endpoint availability\n"
+                        text += "• Environment variables\n"
+                        text += "• Authentication tokens\n"
+                        content.update(text)
+                    else:
+                        log_output.write(f"✗ Test Error: {error_str}")
+                        
+                        text = f"╔═ TEST FAILED - {scenario_name} ════════════════════════╗\n\n"
+                        text += f"❌ Test Failed\n\n"
+                        text += f"Error: {error_str}\n\n"
+                        text += "─" * 60 + "\n"
+                        content.update(text)
+                
+                self.update_status(f"Test failed: {scenario_name}")
             update_ui(show_error_msg)
 

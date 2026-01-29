@@ -22,7 +22,7 @@ def organize_results(result_dir: str = "projects/example/result"):
     
     moved_count = 0
     
-    # Process all JSON and PUML files
+    # Process all JSON and PUML files in root
     for file in result_path.glob("*.*"):
         if file.is_file() and file.suffix in ['.json', '.puml']:
             # Skip if already in subdirectory
@@ -69,6 +69,34 @@ def organize_results(result_dir: str = "projects/example/result"):
             print(f"  → {target_file.relative_to(result_path)}")
             moved_count += 1
     
+    # Process export files (*.txt in exports/ folder)
+    exports_dir = result_path / "exports"
+    if exports_dir.exists():
+        for file in exports_dir.glob("*.txt"):
+            if file.is_file():
+                # Extract date from filename (_YYYYMMDD_HHMMSS)
+                match = re.search(r'_(\d{8})_\d{6}', file.name)
+                if match:
+                    date_str = match.group(1)
+                    target_dir = exports_dir / date_str
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    target_file = target_dir / file.name
+                    
+                    # If file exists, add number suffix
+                    if target_file.exists():
+                        base = target_file.stem
+                        suffix = target_file.suffix
+                        counter = 1
+                        while target_file.exists():
+                            target_file = target_dir / f"{base}_{counter}{suffix}"
+                            counter += 1
+                    
+                    shutil.move(str(file), str(target_file))
+                    print(f"✓ Moved: exports/{file.name}")
+                    print(f"  → exports/{date_str}/{target_file.name}")
+                    moved_count += 1
+    
     print(f"\n{'='*60}")
     print(f"✓ Organized {moved_count} files")
     print(f"{'='*60}\n")
@@ -86,5 +114,9 @@ def organize_results(result_dir: str = "projects/example/result"):
 
 
 if __name__ == "__main__":
-    organize_results()
+    import sys
+    if len(sys.argv) > 1:
+        organize_results(sys.argv[1])
+    else:
+        organize_results()
 

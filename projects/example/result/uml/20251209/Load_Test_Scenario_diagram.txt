@@ -1,0 +1,17 @@
+======================================================================
+  Scenario: Load Test Scenario
+  Description: Simple scenario for load testing local dummy server
+======================================================================
+
+[1] Health Check
+    │
+    ├─► Method: GET
+    ├─► Path: /health
+    ├─► Assertions: 2
+    │   • status eq 200
+    │   • body.status eq healthy
+    └─►
+
+======================================================================
+  Total Steps: 1
+======================================================================
