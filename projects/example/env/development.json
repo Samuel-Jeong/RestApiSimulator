@@ -9,5 +9,9 @@
     "user_id": 1,
     "username": "dev_user",
     "email": "dev@example.com"
+  },
+  "params": {
+    "userId": "test-user-dev",
+    "deviceId": "device-dev-001"
   }
 }
