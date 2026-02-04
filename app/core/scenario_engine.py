@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime
 from typing import Dict, Any, Optional, Callable
 from ..models.scenario import Scenario, ScenarioStep
-from ..models.result import StepResult, ScenarioResult, TestStatus
+from ..models.result import StepResult, ScenarioResult, TestStatus, PreRequestResult
 from ..models.config import HostConfig
 from ..models.environment import Environment
 from .http_client import HttpClient
@@ -48,6 +48,10 @@ class ScenarioEngine:
         # Add environment variables
         if self.environment:
             variables['env'] = self.environment.variables.copy()
+            
+            # Add params to top-level variables for direct access ({{userId}} instead of {{env.userId}})
+            if hasattr(self.environment, 'params') and self.environment.params:
+                variables.update(self.environment.params)
         else:
             variables['env'] = {}
         
@@ -58,6 +62,9 @@ class ScenarioEngine:
         if pre_request_script and pre_request_script not in pre_request_scripts:
             pre_request_scripts.append(pre_request_script)
         
+        # Collect pre-request results
+        pre_request_results = []
+        
         # Execute all pre-request scripts sequentially
         for script_name in pre_request_scripts:
             try:
@@ -66,38 +73,98 @@ class ScenarioEngine:
                     print(f"")
                     print(f"🔧 Executing package library config: {script_name}")
                     print(f"{'─'*60}")
-                    pre_request_vars = self.json_pre_request_engine.execute_config(
+                    pre_request_vars, step_infos = self.json_pre_request_engine.execute_config(
                         script_name,
                         self.environment.variables if self.environment else {},
                         variables
                     )
                     # Merge pre-request results into env namespace
                     variables['env'].update(pre_request_vars)
+                    
+                    # Convert step_infos to PreRequestResult objects
+                    for step_info in step_infos:
+                        pre_req_result = PreRequestResult(
+                            step_name=step_info['step_name'],
+                            method=step_info['method'],
+                            url=step_info['url'],
+                            status=TestStatus.ERROR if step_info['error'] else TestStatus.SUCCESS,
+                            status_code=step_info.get('status_code'),
+                            response_time_ms=step_info.get('response_time_ms', 0),
+                            extracted_variables=pre_request_vars if not step_info['error'] else {},
+                            error_message=step_info.get('error')
+                        )
+                        pre_request_results.append(pre_req_result)
+                        
                 # Fallback to Python script (*.py)
                 elif script_name.endswith('.py') and self.pre_request_engine:
                     print(f"")
                     print(f"🔧 Executing package library script: {script_name}")
                     print(f"{'─'*60}")
-                    pre_request_vars = self.pre_request_engine.execute_script(
+                    pre_request_vars, step_info = self.pre_request_engine.execute_script(
                         script_name,
                         self.environment.variables if self.environment else {},
                         variables
                     )
                     # Merge pre-request results into env namespace
                     variables['env'].update(pre_request_vars)
+                    
+                    # Convert step_info to PreRequestResult object
+                    pre_req_result = PreRequestResult(
+                        step_name=step_info['step_name'],
+                        method=step_info['method'],
+                        url=step_info['url'],
+                        status=TestStatus.ERROR if step_info['error'] else TestStatus.SUCCESS,
+                        status_code=step_info.get('status_code'),
+                        response_time_ms=step_info.get('response_time_ms', 0),
+                        extracted_variables=pre_request_vars,
+                        error_message=step_info.get('error')
+                    )
+                    pre_request_results.append(pre_req_result)
+                    
             except Exception as e:
                 print(f"")
                 print(f"{'='*60}")
-                print(f"❌ PACKAGE LIBRARY EXECUTION FAILED")
+                print(f"❌ PRE-REQUEST (PACKAGE LIBRARY) FAILED")
                 print(f"{'='*60}")
                 print(f"Script: {script_name}")
                 print(f"Error:  {e}")
                 print(f"{'='*60}")
                 print(f"")
-                # Continue or stop based on scenario configuration
-                if not scenario.continue_on_error:
-                    # Re-raise with clear prefix for error tracking
-                    raise Exception(f"[PACKAGE_LIBRARY_ERROR] {script_name}: {e}") from e
+                
+                # Create failed pre-request result
+                failed_pre_req_result = PreRequestResult(
+                    step_name=script_name,
+                    method='JSON' if script_name.endswith('.json') else 'PYTHON',
+                    url=script_name,
+                    status=TestStatus.ERROR,
+                    status_code=None,
+                    response_time_ms=0,
+                    extracted_variables={},
+                    error_message=str(e)
+                )
+                pre_request_results.append(failed_pre_req_result)
+                
+                # Pre-request 실패 시 시나리오 API 요청 실행 안함 (무조건 중단)
+                print(f"⚠️  Scenario steps will NOT be executed due to pre-request failure.")
+                print(f"")
+                
+                end_time = datetime.now()
+                duration = (end_time - start_time).total_seconds()
+                
+                return ScenarioResult(
+                    scenario_name=scenario.name,
+                    status=TestStatus.ERROR,
+                    start_time=start_time,
+                    end_time=end_time,
+                    duration_seconds=duration,
+                    steps=[],
+                    pre_request_results=pre_request_results,
+                    variables=variables,
+                    total_requests=0,
+                    successful_requests=0,
+                    failed_requests=0,
+                    error_requests=1
+                )
         
         steps_results = []
         
@@ -143,6 +210,7 @@ class ScenarioEngine:
             end_time=end_time,
             duration_seconds=duration,
             steps=steps_results,
+            pre_request_results=pre_request_results,
             variables=variables,
             total_requests=total_requests,
             successful_requests=successful,
@@ -207,6 +275,7 @@ class ScenarioEngine:
                     status_code=status_code,
                     response_time_ms=response_time_ms,
                     request_headers=resolved_headers,  # Use resolved headers
+                    request_query_params=resolved_query_params,  # Add query params
                     request_body=resolved_body,  # Use resolved body
                     response_headers=response_headers,
                     response_body=response_body,
@@ -227,6 +296,7 @@ class ScenarioEngine:
         url = f"{self.http_client.base_url}{step.path}"
         resolver = VariableResolver(variables)
         resolved_headers = resolver.resolve(step.headers) if step.headers else {}
+        resolved_query_params = resolver.resolve(step.query_params) if step.query_params else None
         resolved_body = resolver.resolve(step.body) if step.body is not None else None
         
         # Add prefix to distinguish API errors from package library errors
@@ -239,6 +309,7 @@ class ScenarioEngine:
             status=TestStatus.ERROR,
             response_time_ms=0,
             request_headers=resolved_headers,
+            request_query_params=resolved_query_params,
             request_body=resolved_body,
             error_message=f"{error_prefix}{last_error}" if error_prefix else last_error
         )

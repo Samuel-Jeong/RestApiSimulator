@@ -47,6 +47,28 @@ class HttpClient:
         start_time = datetime.now()
         
         try:
+            # DEBUG: Log actual headers being sent
+            print(f"")
+            print(f"{'='*80}")
+            print(f"🔍 DEBUG - Actual HTTP Request Headers")
+            print(f"{'='*80}")
+            print(f"Method: {method.upper()}")
+            print(f"URL: {url}")
+            print(f"Headers:")
+            for key, value in req_headers.items():
+                if key.lower() == 'authorization':
+                    # Mask sensitive auth data but show format
+                    if value.startswith('Basic '):
+                        print(f"  {key}: Basic {value[6:16]}...")
+                    elif value.startswith('Bearer '):
+                        print(f"  {key}: Bearer {value[7:17]}...")
+                    else:
+                        print(f"  {key}: {value[:20]}...")
+                else:
+                    print(f"  {key}: {value}")
+            print(f"{'='*80}")
+            print(f"")
+            
             # Disable HTTP/2 to preserve header case sensitivity
             async with httpx.AsyncClient(
                 verify=self.verify_ssl,
@@ -94,6 +116,10 @@ class HttpClient:
     ) -> Tuple[int, Dict[str, str], Any, float, Dict[str, Any], Dict[str, Any], Any]:
         """Execute a scenario step with variable substitution
         
+        Args:
+            step: Scenario step to execute
+            variables: Variables for substitution (includes env.params)
+        
         Returns:
             Tuple of (status_code, response_headers, response_body, response_time_ms, 
                      resolved_headers, resolved_query_params, resolved_body)
@@ -107,10 +133,31 @@ class HttpClient:
         context = variables or {}
         resolver = VariableResolver(context)
         
+        # DEBUG: Log variable context
+        print(f"")
+        print(f"{'='*80}")
+        print(f"🔍 DEBUG - Variable Resolution Context")
+        print(f"{'='*80}")
+        print(f"Available variables (top-level keys): {list(context.keys())}")
+        if 'env' in context and isinstance(context['env'], dict):
+            print(f"Environment variables: {list(context['env'].keys())}")
+        print(f"{'='*80}")
+        print(f"")
+        
         path = resolver.resolve(step.path)
         headers = resolver.resolve(step.headers) if step.headers else None
         query_params = resolver.resolve(step.query_params) if step.query_params else None
         body = resolver.resolve(step.body) if step.body is not None else None
+        
+        # DEBUG: Log resolved headers
+        print(f"")
+        print(f"{'='*80}")
+        print(f"🔍 DEBUG - Header Resolution")
+        print(f"{'='*80}")
+        print(f"Original headers: {step.headers}")
+        print(f"Resolved headers: {headers}")
+        print(f"{'='*80}")
+        print(f"")
         
         status_code, response_headers, response_body, response_time_ms = await self.execute_request(
             method=step.method.value,

@@ -501,9 +501,16 @@ class RestApiSimulatorApp(App):
                 nonlocal text
                 
                 if node['type'] == 'folder' and node['path'] != '':
-                    # 폴더 표시 (날짜 폴더, scenarios, loadtests 등)
+                    # 폴더 표시 (타임스탬프 폴더, 시나리오 폴더, scenarios, loadtests 등)
                     connector = "└── " if is_last else "├── "
-                    folder_icon = "📅 " if node['name'].isdigit() and len(node['name']) == 8 else "📁 "
+                    
+                    # 아이콘 결정: 타임스탬프(14자리) = 🕐, 날짜(8자리) = 📅, 기타 = 📁
+                    if node['name'].isdigit() and len(node['name']) == 14:
+                        folder_icon = "🕐 "
+                    elif node['name'].isdigit() and len(node['name']) == 8:
+                        folder_icon = "📅 "
+                    else:
+                        folder_icon = "📁 "
                     
                     # 폴더 타입 추가 정보
                     folder_label = node['name']
@@ -536,12 +543,23 @@ class RestApiSimulatorApp(App):
                     size_kb = node.get('size', 0) / 1024
                     size_str = f"{size_kb:.1f}KB" if size_kb < 1024 else f"{size_kb/1024:.1f}MB"
                     
-                    # Truncate long names
+                    # Wrap long names with proper indentation
                     display_name = node['name']
-                    if len(display_name) > 50:
-                        display_name = display_name[:47] + "..."
+                    max_width = 80  # 최대 너비
+                    if len(display_name) > max_width:
+                        # 첫 줄
+                        text += f"{prefix}{connector}[{idx:2d}] {icon}{display_name[:max_width]}\n"
+                        # 나머지 줄들 (들여쓰기 적용)
+                        remaining = display_name[max_width:]
+                        indent_prefix = prefix + ("    " if is_last else "│   ") + "    "  # 번호와 아이콘 자리만큼 들여쓰기
+                        while remaining:
+                            text += f"{indent_prefix}{remaining[:max_width]}\n"
+                            remaining = remaining[max_width:]
+                        # 파일 크기는 마지막에 추가
+                        text += f"{indent_prefix}({size_str})\n"
+                    else:
+                        text += f"{prefix}{connector}[{idx:2d}] {icon}{display_name} ({size_str})\n"
                     
-                    text += f"{prefix}{connector}[{idx:2d}] {icon}{display_name} ({size_str})\n"
                     self._results_index_map[idx] = node['path']
                     counter[0] += 1
                 
@@ -914,7 +932,16 @@ class RestApiSimulatorApp(App):
             if scenario_results:
                 text += f"📄 Scenario Tests ({len(scenario_results)}):\n"
                 for idx, result in enumerate(scenario_results[:15], 1):
-                    text += f"  {idx}. {result}\n"
+                    # Wrap long filenames
+                    max_width = 80
+                    if len(result) > max_width:
+                        text += f"  {idx}. {result[:max_width]}\n"
+                        remaining = result[max_width:]
+                        while remaining:
+                            text += f"      {remaining[:max_width]}\n"
+                            remaining = remaining[max_width:]
+                    else:
+                        text += f"  {idx}. {result}\n"
                 if len(scenario_results) > 15:
                     text += f"  ... and {len(scenario_results) - 15} more\n"
                 text += "\n"
@@ -922,7 +949,16 @@ class RestApiSimulatorApp(App):
             if loadtest_results:
                 text += f"⚡ Load Tests ({len(loadtest_results)}):\n"
                 for idx, result in enumerate(loadtest_results[:10], len(scenario_results) + 1):
-                    text += f"  {idx}. {result}\n"
+                    # Wrap long filenames
+                    max_width = 80
+                    if len(result) > max_width:
+                        text += f"  {idx}. {result[:max_width]}\n"
+                        remaining = result[max_width:]
+                        while remaining:
+                            text += f"      {remaining[:max_width]}\n"
+                            remaining = remaining[max_width:]
+                    else:
+                        text += f"  {idx}. {result}\n"
                 if len(loadtest_results) > 10:
                     text += f"  ... and {len(loadtest_results) - 10} more\n"
                 text += "\n"
@@ -930,7 +966,16 @@ class RestApiSimulatorApp(App):
             if other_results:
                 text += f"📋 Other Results ({len(other_results)}):\n"
                 for idx, result in enumerate(other_results[:5], len(scenario_results) + len(loadtest_results) + 1):
-                    text += f"  {idx}. {result}\n"
+                    # Wrap long filenames
+                    max_width = 80
+                    if len(result) > max_width:
+                        text += f"  {idx}. {result[:max_width]}\n"
+                        remaining = result[max_width:]
+                        while remaining:
+                            text += f"      {remaining[:max_width]}\n"
+                            remaining = remaining[max_width:]
+                    else:
+                        text += f"  {idx}. {result}\n"
                 text += "\n"
             
             # Create mapping for flat view
@@ -979,7 +1024,7 @@ class RestApiSimulatorApp(App):
         full_path = self.project_manager.get_results_dir(self.current_project) / result_path
         
         try:
-            with open(full_path, 'r') as f:
+            with open(full_path, 'r', encoding='utf-8') as f:
                 result_data = json.load(f)
             
             # Check test type
@@ -993,6 +1038,10 @@ class RestApiSimulatorApp(App):
             # Get scenario result
             scenario_result = result_data.get('scenario_results', [{}])[0]
             steps = scenario_result.get('steps', [])
+            pre_request_results = scenario_result.get('pre_request_results', [])
+            
+            # Check if pre-request failed
+            pre_request_failed = any(pr.get('status') == 'error' for pr in pre_request_results)
             
             # Calculate statistics
             response_times = [s['response_time_ms'] for s in steps if s.get('response_time_ms')]
@@ -1035,7 +1084,15 @@ class RestApiSimulatorApp(App):
             write_analysis("")
             
             status_emoji = "✓" if scenario_result.get('status') == 'success' else "✗"
-            write_analysis(f"{status_emoji} Status: {scenario_result.get('status', 'unknown').upper()}")
+            status_text = scenario_result.get('status', 'unknown').upper()
+            
+            # Pre-request 실패 강조 표시
+            if pre_request_failed:
+                write_analysis(f"{status_emoji} Status: {status_text}")
+                write_analysis(f"⚠️  PRE-REQUEST (PACKAGE LIBRARY) FAILED")
+            else:
+                write_analysis(f"{status_emoji} Status: {status_text}")
+            
             write_analysis(f"⏱  Duration: {scenario_result.get('duration_seconds', 0):.3f}s")
             write_analysis(f"📅 Time: {result_data.get('created_at', 'N/A')}")
             write_analysis("")
@@ -1065,6 +1122,38 @@ class RestApiSimulatorApp(App):
             write_analysis(f"✗ Failed:          {failed_assertions}")
             write_analysis("")
             
+            # Pre-request Results
+            if pre_request_results:
+                write_analysis("═══ PRE-REQUEST (PACKAGE LIBRARY) ═══")
+                
+                # 실패한 pre-request 개수 계산
+                failed_pre_reqs = sum(1 for pr in pre_request_results if pr.get('status') == 'error')
+                success_pre_reqs = len(pre_request_results) - failed_pre_reqs
+                
+                write_analysis(f"Total: {len(pre_request_results)} | Success: {success_pre_reqs} | Failed: {failed_pre_reqs}")
+                write_analysis("")
+                
+                for idx, pre_req in enumerate(pre_request_results, 1):
+                    status_icon = "✓" if pre_req.get('status') == 'success' else "✗"
+                    pre_req_name = pre_req.get('step_name', 'Unknown')
+                    response_time = pre_req.get('response_time_ms', 0)
+                    status_code = pre_req.get('status_code', 'N/A')
+                    
+                    write_analysis(f"{status_icon} [{idx}] {pre_req_name}")
+                    write_analysis(f"     {pre_req.get('method', 'N/A')} | {status_code} | {response_time:.1f}ms")
+                    
+                    if pre_req.get('extracted_variables'):
+                        extracted = pre_req['extracted_variables']
+                        write_analysis(f"     Extracted: {', '.join(extracted.keys())}")
+                    
+                    if pre_req.get('error_message'):
+                        error = pre_req['error_message']
+                        if len(error) > 50:
+                            error = error[:47] + "..."
+                        write_analysis(f"     ❌ Error: {error}")
+                
+                write_analysis("")
+            
             # Variables
             variables = scenario_result.get('variables', {})
             if variables:
@@ -1074,21 +1163,28 @@ class RestApiSimulatorApp(App):
                 write_analysis("")
             
             # Step Summary
-            write_analysis("═══ STEP SUMMARY ═══")
-            write_analysis("─" * 60)
-            write_analysis(f"{'#':<3} {'Step Name':<32} {'Status':<6} {'Time':<10}")
-            write_analysis("─" * 60)
+            if steps:
+                write_analysis("═══ STEP SUMMARY ═══")
+                write_analysis("─" * 60)
+                write_analysis(f"{'#':<3} {'Step Name':<32} {'Status':<6} {'Time':<10}")
+                write_analysis("─" * 60)
+                
+                for idx, step in enumerate(steps, 1):
+                    status_icon = "✓" if step.get('status') == 'success' else "✗"
+                    step_name = step.get('step_name', 'Unknown')
+                    if len(step_name) > 32:
+                        step_name = step_name[:29] + "..."
+                    response_time = f"{step.get('response_time_ms', 0):.1f}ms"
+                    write_analysis(f"{idx:<3} {step_name:<32} {status_icon:<6} {response_time:<10}")
+                
+                write_analysis("─" * 60)
+                write_analysis("")
+            elif pre_request_failed:
+                write_analysis("═══ SCENARIO NOT EXECUTED ═══")
+                write_analysis("Scenario steps were not executed due to")
+                write_analysis("pre-request (package library) failure.")
+                write_analysis("")
             
-            for idx, step in enumerate(steps, 1):
-                status_icon = "✓" if step.get('status') == 'success' else "✗"
-                step_name = step.get('step_name', 'Unknown')
-                if len(step_name) > 32:
-                    step_name = step_name[:29] + "..."
-                response_time = f"{step.get('response_time_ms', 0):.1f}ms"
-                write_analysis(f"{idx:<3} {step_name:<32} {status_icon:<6} {response_time:<10}")
-            
-            write_analysis("─" * 60)
-            write_analysis("")
             write_analysis("Type 'export' to save analysis to files")
             
             # Clear right panel
@@ -1100,6 +1196,58 @@ class RestApiSimulatorApp(App):
             write_api_flow("║" + " " * 20 + "API FLOW DIAGRAM" + " " * 22 + "║")
             write_api_flow("╚" + "═" * 58 + "╝")
             write_api_flow("")
+            
+            # Show pre-request steps in flow
+            if pre_request_results:
+                write_api_flow("🔧 Pre-request (Package Library):")
+                write_api_flow("")
+                
+                for idx, pre_req in enumerate(pre_request_results, 1):
+                    status_icon = "✓" if pre_req.get('status') == 'success' else "✗"
+                    method = pre_req.get('method', 'N/A')
+                    status_code = pre_req.get('status_code', 'N/A')
+                    response_time = pre_req.get('response_time_ms', 0)
+                    
+                    # Shorten step name
+                    step_name = pre_req.get('step_name', 'Step')
+                    if len(step_name) > 35:
+                        step_name = step_name[:32] + "..."
+                    
+                    write_api_flow(f"[P{idx}] {step_name}")
+                    write_api_flow(f"     │")
+                    write_api_flow(f"     ├─► {method}")
+                    write_api_flow(f"     │")
+                    
+                    # Error 표시 강조
+                    if pre_req.get('status') == 'error':
+                        write_api_flow(f"     ◄─┤ [{status_icon}] ❌ FAILED | {response_time:.1f}ms")
+                        if pre_req.get('error_message'):
+                            error_msg = pre_req['error_message']
+                            if len(error_msg) > 45:
+                                error_msg = error_msg[:42] + "..."
+                            write_api_flow(f"     │   Error: {error_msg}")
+                    else:
+                        write_api_flow(f"     ◄─┤ [{status_icon}] {status_code} | {response_time:.1f}ms")
+                        
+                        # Extracted variables
+                        if pre_req.get('extracted_variables'):
+                            vars_str = ", ".join(pre_req['extracted_variables'].keys())
+                            if len(vars_str) > 40:
+                                vars_str = vars_str[:37] + "..."
+                            write_api_flow(f"     │   Extracted: {vars_str}")
+                    
+                    write_api_flow(f"     │")
+                
+                write_api_flow("─" * 58)
+                
+                if pre_request_failed:
+                    write_api_flow("")
+                    write_api_flow("❌ Pre-request failed - Scenario not executed")
+                    write_api_flow("")
+                else:
+                    write_api_flow("")
+                    write_api_flow("Main Scenario Steps:")
+                    write_api_flow("")
             
             for idx, step in enumerate(steps, 1):
                 status_icon = "✓" if step.get('status') == 'success' else "✗"
@@ -1137,13 +1285,68 @@ class RestApiSimulatorApp(App):
                 write_api_flow(f"    │")
             
             write_api_flow("")
-            write_api_flow("✓ Flow completed")
+            if pre_request_failed:
+                write_api_flow("❌ Flow stopped - Pre-request failed")
+            elif steps:
+                write_api_flow("✓ Flow completed")
+            else:
+                write_api_flow("ℹ No scenario steps executed")
             
             # Detailed logs
             write_log("═" * 58)
             write_log(f"STEP-BY-STEP DETAILS")
             write_log("═" * 58)
             write_log("")
+            
+            # Pre-request details first
+            if pre_request_results:
+                write_log("─" * 58)
+                write_log("🔧 PRE-REQUEST (PACKAGE LIBRARY)")
+                write_log("─" * 58)
+                write_log("")
+                
+                for idx, pre_req in enumerate(pre_request_results, 1):
+                    status_icon = "✓" if pre_req.get('status') == 'success' else "✗"
+                    
+                    write_log(f"{status_icon} [{idx}] {pre_req.get('step_name', 'Unknown')}")
+                    write_log(f"Method:      {pre_req.get('method', 'N/A')}")
+                    write_log(f"URL:         {pre_req.get('url', 'N/A')}")
+                    
+                    if pre_req.get('status_code'):
+                        write_log(f"Status:      {pre_req['status_code']}")
+                    
+                    write_log(f"Time:        {pre_req.get('response_time_ms', 0):.2f}ms")
+                    
+                    # Extracted variables
+                    if pre_req.get('extracted_variables'):
+                        write_log("")
+                        write_log("Extracted Variables:")
+                        for key, value in pre_req['extracted_variables'].items():
+                            value_str = str(value)
+                            if len(value_str) > 100:
+                                value_str = value_str[:97] + "..."
+                            write_log(f"  {key} = {value_str}")
+                    
+                    # Error message
+                    if pre_req.get('error_message'):
+                        write_log("")
+                        write_log("=" * 58)
+                        write_log("❌ PRE-REQUEST (PACKAGE LIBRARY) FAILED")
+                        write_log("=" * 58)
+                        write_log(f"Error: {pre_req['error_message']}")
+                        write_log("=" * 58)
+                    
+                    write_log("")
+                
+                write_log("─" * 58)
+                
+                if pre_request_failed:
+                    write_log("")
+                    write_log("❌ Scenario steps were not executed due to")
+                    write_log("   pre-request (package library) failure.")
+                    write_log("")
+                
+                write_log("")
             
             for idx, step in enumerate(steps, 1):
                 status_icon = "✓" if step.get('status') == 'success' else "✗"
@@ -1158,33 +1361,41 @@ class RestApiSimulatorApp(App):
                 write_log(f"Status:      {step.get('status_code', 'N/A')}")
                 write_log(f"Time:        {step.get('response_time_ms', 0):.2f}ms")
                 
-                # Request body (compact)
+                # Request headers
+                if step.get('request_headers'):
+                    write_log("")
+                    write_log("Request Headers:")
+                    headers_str = json.dumps(step['request_headers'], indent=2, ensure_ascii=False)
+                    lines = headers_str.split('\n')
+                    for line in lines:
+                        write_log(line)
+                
+                # Request query parameters
+                if step.get('request_query_params'):
+                    write_log("")
+                    write_log("Request Query Params:")
+                    params_str = json.dumps(step['request_query_params'], indent=2, ensure_ascii=False)
+                    lines = params_str.split('\n')
+                    for line in lines:
+                        write_log(line)
+                
+                # Request body (full)
                 if step.get('request_body'):
                     write_log("")
                     write_log("Request:")
-                    body_str = json.dumps(step['request_body'], indent=2)
+                    body_str = json.dumps(step['request_body'], indent=2, ensure_ascii=False)
                     lines = body_str.split('\n')
-                    if len(lines) > 8:
-                        for line in lines[:8]:
-                            write_log(line)
-                        write_log(f"  ... ({len(lines) - 8} lines)")
-                    else:
-                        for line in lines:
-                            write_log(line)
+                    for line in lines:
+                        write_log(line)
                 
-                # Response body (compact)
+                # Response body (full)
                 if step.get('response_body'):
                     write_log("")
                     write_log("Response:")
-                    body_str = json.dumps(step['response_body'], indent=2)
+                    body_str = json.dumps(step['response_body'], indent=2, ensure_ascii=False)
                     lines = body_str.split('\n')
-                    if len(lines) > 10:
-                        for line in lines[:10]:
-                            write_log(line)
-                        write_log(f"  ... ({len(lines) - 10} lines)")
-                    else:
-                        for line in lines:
-                            write_log(line)
+                    for line in lines:
+                        write_log(line)
                 
                 # Assertions
                 if step.get('assertion_details'):
@@ -1251,36 +1462,66 @@ class RestApiSimulatorApp(App):
         """Export current result data to text files"""
         from pathlib import Path
         from datetime import datetime
+        import re
         
         if not self.current_result_data.get("result_path"):
             self.show_error("No result loaded to export")
             return
         
         try:
-            # Get export directory with date organization
-            date_str = datetime.now().strftime("%Y%m%d")
-            export_dir = self.project_manager.get_results_dir(self.current_project) / "exports" / date_str
-            export_dir.mkdir(parents=True, exist_ok=True)
-            
             # Generate base filename from result path
             result_path = self.current_result_data["result_path"]
             base_name = Path(result_path).stem
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Get scenario name (시나리오 이름 추출) - 파일시스템 안전한 이름으로 변환
+            scenario_name = re.sub(r'[^\w\-_]', '_', base_name)
+            
+            # Generate timestamp directory (yyyyMMddHHmmss)
+            timestamp_dir = datetime.now().strftime("%Y%m%d%H%M%S")
+            
+            # Create export directory structure: exports/{scenario_name}/{yyyyMMddHHmmss}/
+            export_dir = self.project_manager.get_results_dir(self.current_project) / "exports" / scenario_name / timestamp_dir
+            export_dir.mkdir(parents=True, exist_ok=True)
             
             # Export Analysis Data
-            analysis_file = export_dir / f"{base_name}_analysis_{timestamp}.txt"
+            analysis_file = export_dir / f"analysis.txt"
             with open(analysis_file, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(self.current_result_data["analysis"]))
             
-            # Export API Flow Diagram
-            api_flow_file = export_dir / f"{base_name}_api_flow_{timestamp}.txt"
+            # Export API Flow Diagram (UML)
+            api_flow_file = export_dir / f"scenario_uml.txt"
             with open(api_flow_file, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(self.current_result_data["api_flow"]))
             
             # Export Detailed Log
-            log_file = export_dir / f"{base_name}_detailed_log_{timestamp}.txt"
+            log_file = export_dir / f"detailed_log.txt"
             with open(log_file, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(self.current_result_data["log"]))
+            
+            # Copy original scenario file
+            import shutil
+            scenario_file = None
+            if Path(result_path).exists():
+                # result 파일 경로에서 시나리오 파일 경로 유추
+                result_file = Path(result_path)
+                # results/xxx.json -> scenario/xxx.yaml 찾기
+                scenario_dir = result_file.parent.parent / "scenario"
+                
+                # API별 폴더 구조 탐색
+                for category in ['success', 'failure', 'integration', 'load_test']:
+                    category_dir = scenario_dir / category
+                    if category_dir.exists():
+                        # API 폴더 탐색
+                        for api_folder in category_dir.iterdir():
+                            if api_folder.is_dir():
+                                # YAML 파일 찾기
+                                yaml_file = api_folder / f"{base_name}.yaml"
+                                if yaml_file.exists():
+                                    scenario_file = export_dir / f"scenario.yaml"
+                                    shutil.copy(yaml_file, scenario_file)
+                                    break
+                    if scenario_file:
+                        break
             
             # Show success message
             log_output = self.query_one("#log_output", RichLog)
@@ -1294,9 +1535,12 @@ class RestApiSimulatorApp(App):
             log_output.write(f"1. {analysis_file.name}")
             log_output.write(f"2. {api_flow_file.name}")
             log_output.write(f"3. {log_file.name}")
+            if scenario_file:
+                log_output.write(f"4. {scenario_file.name}")
             log_output.write("")
             
-            self.update_status(f"✓ Exported 3 files to exports/{date_str}/")
+            file_count = 4 if scenario_file else 3
+            self.update_status(f"✓ Exported {file_count} files to exports/{scenario_name}/{timestamp_dir}/")
             
         except Exception as e:
             self.show_error(f"Export failed: {str(e)}")
@@ -1980,6 +2224,7 @@ class RestApiSimulatorApp(App):
                 update_ui(show_results)
             
             # Save report to results directory
+            report_path = None
             try:
                 results_dir = self.project_manager.get_results_dir(self.current_project)
                 
@@ -2029,6 +2274,22 @@ class RestApiSimulatorApp(App):
                     log_output = self.query_one("#log_output", RichLog)
                     log_output.write(f"⚠️  Warning: Failed to save report: {str(save_err)}")
                 update_ui(log_save_error)
+            
+            # Auto-navigate to result detail view after execution
+            if report_path:
+                # Get relative path from results directory
+                relative_path = report_path.relative_to(results_dir)
+                
+                def auto_show_result():
+                    # Switch to results screen first
+                    self.current_screen = "results"
+                    # Show the result detail
+                    self.show_result_detail(str(relative_path))
+                
+                # Wait a moment before switching to results
+                import time
+                time.sleep(1.5)
+                update_ui(auto_show_result)
             
         except Exception as e:
             def show_error_msg():

@@ -18,8 +18,7 @@ class ReportGenerator:
     ) -> Path:
         """Save scenario test report"""
         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        date_str = datetime.now().strftime("%Y%m%d")
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         report_id = f"scenario_{result.scenario_name}_{timestamp}"
         
         report = TestReport(
@@ -38,9 +37,16 @@ class ReportGenerator:
             }
         )
         
-        # Create organized directory structure: scenarios/YYYYMMDD/
-        organized_dir = output_dir / "scenarios" / date_str
-        return ReportGenerator._save_report(report, organized_dir)
+        # Create organized directory structure: scenarios/{scenario_name}/{yyyyMMddHHmmss}/
+        import re
+        safe_scenario_name = re.sub(r'[^\w\-_]', '_', result.scenario_name)
+        organized_dir = output_dir / "scenarios" / safe_scenario_name / timestamp
+        report_path = ReportGenerator._save_report(report, organized_dir)
+        
+        # Save scenario file and UML alongside result
+        ReportGenerator._save_scenario_artifacts(result, organized_dir, output_dir, report_id)
+        
+        return report_path
     
     @staticmethod
     def save_load_test_report(
@@ -50,8 +56,7 @@ class ReportGenerator:
     ) -> Path:
         """Save load test report"""
         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        date_str = datetime.now().strftime("%Y%m%d")
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         report_id = f"loadtest_{result.test_name}_{timestamp}"
         
         report = TestReport(
@@ -72,9 +77,124 @@ class ReportGenerator:
             }
         )
         
-        # Create organized directory structure: loadtests/YYYYMMDD/
-        organized_dir = output_dir / "loadtests" / date_str
-        return ReportGenerator._save_report(report, organized_dir)
+        # Create organized directory structure: loadtests/{test_name}/{yyyyMMddHHmmss}/
+        import re
+        safe_test_name = re.sub(r'[^\w\-_]', '_', result.test_name)
+        organized_dir = output_dir / "loadtests" / safe_test_name / timestamp
+        report_path = ReportGenerator._save_report(report, organized_dir)
+        
+        # Save scenario file and UML for load tests too
+        ReportGenerator._save_load_test_artifacts(result, organized_dir, output_dir, report_id)
+        
+        return report_path
+    
+    @staticmethod
+    def _save_scenario_artifacts(
+        result: ScenarioResult,
+        report_dir: Path,
+        project_results_dir: Path,
+        report_id: str
+    ):
+        """Save scenario file and UML alongside result"""
+        import shutil
+        from .uml_generator import UMLGenerator
+        
+        try:
+            # Find scenario file in project directory
+            project_dir = project_results_dir.parent  # results/ -> project/
+            scenario_base_name = result.scenario_name
+            
+            # Search in scenario directory structure
+            scenario_dir = project_dir / "scenario"
+            scenario_file = None
+            
+            if scenario_dir.exists():
+                # Search in success, failure, integration, load_test folders
+                for category in ['success', 'failure', 'integration', 'load_test']:
+                    category_dir = scenario_dir / category
+                    if category_dir.exists():
+                        # Search in API-specific folders
+                        for api_folder in category_dir.iterdir():
+                            if api_folder.is_dir():
+                                # Try to find YAML file
+                                yaml_file = api_folder / f"{scenario_base_name}.yaml"
+                                if yaml_file.exists():
+                                    scenario_file = yaml_file
+                                    break
+                        if scenario_file:
+                            break
+            
+            # Copy scenario file if found
+            if scenario_file:
+                dest_scenario = report_dir / f"{report_id}_scenario.yaml"
+                shutil.copy(scenario_file, dest_scenario)
+                
+                # Generate and save UML
+                try:
+                    uml_content = UMLGenerator.generate_text_diagram(str(scenario_file))
+                    uml_file = report_dir / f"{report_id}_uml.txt"
+                    with open(uml_file, 'w', encoding='utf-8') as f:
+                        f.write(uml_content)
+                except Exception as e:
+                    # UML generation failed, but continue
+                    pass
+                    
+        except Exception as e:
+            # If any error occurs, just skip artifacts (not critical)
+            pass
+    
+    @staticmethod
+    def _save_load_test_artifacts(
+        result: LoadTestResult,
+        report_dir: Path,
+        project_results_dir: Path,
+        report_id: str
+    ):
+        """Save scenario file and UML for load tests"""
+        import shutil
+        from .uml_generator import UMLGenerator
+        
+        try:
+            # Find scenario file in project directory
+            project_dir = project_results_dir.parent  # results/ -> project/
+            scenario_base_name = result.test_name
+            
+            # Search in scenario/load_test directory
+            scenario_dir = project_dir / "scenario" / "load_test"
+            scenario_file = None
+            
+            if scenario_dir.exists():
+                # Try to find YAML file directly or in subdirectories
+                yaml_file = scenario_dir / f"{scenario_base_name}.yaml"
+                if yaml_file.exists():
+                    scenario_file = yaml_file
+                else:
+                    # Search in subdirectories
+                    for item in scenario_dir.iterdir():
+                        if item.is_dir():
+                            yaml_file = item / f"{scenario_base_name}.yaml"
+                            if yaml_file.exists():
+                                scenario_file = yaml_file
+                                break
+            
+            # Copy scenario file if found
+            if scenario_file:
+                dest_scenario = report_dir / f"{report_id}_scenario.yaml"
+                shutil.copy(scenario_file, dest_scenario)
+                
+                # Generate and save UML
+                try:
+                    uml_content = UMLGenerator.generate_text_diagram(str(scenario_file))
+                    uml_file = report_dir / f"{report_id}_uml.txt"
+                    with open(uml_file, 'w', encoding='utf-8') as f:
+                        f.write(uml_content)
+                except Exception as e:
+                    # UML generation failed, but continue
+                    pass
+                    
+        except Exception as e:
+            # If any error occurs, just skip artifacts (not critical)
+            pass
     
     @staticmethod
     def _save_report(report: TestReport, output_dir: Path) -> Path:

@@ -24,7 +24,7 @@ class PreRequestEngine:
         script_name: str,
         environment_vars: Dict[str, Any],
         scenario_vars: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Execute a pre-request script
         
@@ -34,12 +34,21 @@ class PreRequestEngine:
             scenario_vars: Scenario variables
             
         Returns:
-            Updated variables from script execution
+            Tuple of (updated_variables, step_info)
         """
         script_path = self.package_library_path / script_name
         
+        step_info = {
+            'step_name': script_name,
+            'method': 'PYTHON',
+            'url': str(script_path),
+            'status_code': None,
+            'response_time_ms': 0,
+            'error': None
+        }
+        
         if not script_path.exists():
-            return {}
+            return {}, step_info
         
         # Prepare context for script
         context = {
@@ -49,6 +58,8 @@ class PreRequestEngine:
         }
         
         try:
+            import time
+            
             # Add package_library to Python path
             if str(self.package_library_path) not in sys.path:
                 sys.path.insert(0, str(self.package_library_path))
@@ -58,10 +69,19 @@ class PreRequestEngine:
                 script_content = f.read()
             
             # Execute in isolated namespace
+            start_time = time.time()
             exec(script_content, {'__builtins__': __builtins__}, context)
+            response_time_ms = (time.time() - start_time) * 1000
+            
+            step_info['response_time_ms'] = response_time_ms
             
             # Return result variables
-            return context.get('result', {})
+            result = context.get('result', {})
+            
+            # Python 스크립트는 extract 검증을 하지 않음 (명시적 extract 설정이 없으므로)
+            print(f"✅ Python script executed successfully ({response_time_ms:.0f}ms)")
+            
+            return result, step_info
             
         except Exception as e:
             print(f"")
@@ -79,7 +99,9 @@ class PreRequestEngine:
             traceback.print_exc()
             print(f"{'='*60}")
             print(f"")
-            return {}
+            
+            step_info['error'] = str(e)
+            raise
         finally:
             # Clean up sys.path
             if str(self.package_library_path) in sys.path:

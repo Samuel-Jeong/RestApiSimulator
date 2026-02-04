@@ -15,7 +15,7 @@ class VariableResolver:
         Initialize resolver with variables
         
         Args:
-            variables: Dictionary of variables to resolve
+            variables: Dictionary of variables to resolve (includes env.params at top level)
         """
         self.variables = variables
     

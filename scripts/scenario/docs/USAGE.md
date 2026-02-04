@@ -545,6 +545,157 @@ projects/{project}/package_library/
 - `{{변수명}}`: Pre-request에서 추출한 변수
 - Pre-request에서 추출한 변수를 시나리오 헤더/본문에서 사용 가능
 
+### 7. 기본 인증 토큰을 위한 Package Library 매핑
+
+#### 개요
+`--default-auth-token`에서 사용하는 토큰 값을 package library를 통해 동적으로 가져올 수 있습니다.
+
+#### 사용 방법
+```bash
+python3 scripts/scenario/generate_scenario.py \
+  /path/to/controller \
+  --auth-mode all \
+  --default-auth bearer \
+  --default-auth-token "{{USER_CERT_TOKEN}}" \
+  --default-auth-library "get-user-token.json"
+```
+
+#### 동작 방식
+1. 엔드포인트에 어노테이션/패키지 매핑이 없는 경우
+2. `get-user-token.json` 라이브러리를 먼저 실행
+3. 응답에서 `USER_CERT_TOKEN` 값을 추출
+4. `Bearer {{USER_CERT_TOKEN}}` 헤더 적용
+
+#### 기본 인증 라이브러리 예시
+`package_library/get-user-token.json`:
+```json
+{
+  "name": "Get User Authentication Token",
+  "description": "사용자 인증 토큰을 동적으로 가져오는 pre-request 라이브러리",
+  "steps": [
+    {
+      "name": "Get User Token",
+      "method": "POST",
+      "url": "{{env.BaseUrl}}/api/v2/auth/login",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "userId": "{{env.UserId}}",
+        "userPassword": "{{env.UserPassword}}"
+      },
+      "extract": {
+        "USER_CERT_TOKEN": "data.token"
+      }
+    }
+  ]
+}
+```
+
+#### 실제 사용 예시
+```bash
+python3 generate_scenario.py \
+  /path/to/SgiController.java \
+  --auth-mode all \
+  --default-auth bearer \
+  --default-auth-token "{{USER_CERT_TOKEN}}" \
+  --default-auth-library "get-user-token.json" \
+  --annotation-auth-mapping "NoAuth:basic:{{USER_ID}}:{{USER_PW}}"
+```
+
+생성된 시나리오:
+```yaml
+name: Get User Info - Success Test
+pre_request_scripts:
+  - get-user-token.json  # ← 기본 인증 라이브러리 추가됨
+steps:
+  - name: Get User Info
+    method: GET
+    url: /api/v2/user/info
+    headers:
+      Authorization: Bearer {{USER_CERT_TOKEN}}  # ← 라이브러리에서 추출한 토큰 사용
+```
+
+### 8. Package Library에서 Basic Auth 자동 인코딩
+
+#### 개요
+Package library 파일에서 `Authorization: "Basic {{env.USER_ID}}:{{env.USER_PW}}"` 형식으로 작성하면 자동으로 Base64 인코딩되어 요청됩니다.
+
+#### 동작 방식
+1. Package library에서 `Authorization` 헤더 감지
+2. `Basic user:password` 형식인지 확인
+3. 자동으로 Base64 인코딩: `Basic base64(user:password)`
+4. 인코딩된 헤더로 HTTP 요청 실행
+
+#### Package Library 예시
+`package_library/capshome-user-auth.json`:
+```json
+{
+  "name": "CAPSHOME User Authentication",
+  "description": "Get user certification token before test execution",
+  "steps": [
+    {
+      "name": "Get User Cert Token",
+      "method": "POST",
+      "url": "{{env.HOST}}/api/v2/user/login",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Basic {{env.USER_ID}}:{{env.USER_PW}}",
+        "X-Auth-Server": "CAPSHOME"
+      },
+      "body": {
+        "fcmToken": "{{env.FCM_TOKEN}}",
+        "osType": "{{env.OS_TYPE}}"
+      },
+      "extract": {
+        "USER_CERT_TOKEN": "data"
+      }
+    }
+  ]
+}
+```
+
+#### 실제 요청 예시
+**Library 파일 작성:**
+```json
+"Authorization": "Basic {{env.USER_ID}}:{{env.USER_PW}}"
+```
+
+**환경 변수 (env/development.json):**
+```json
+{
+  "params": {
+    "USER_ID": "kimmo",
+    "USER_PW": "11qqaa.."
+  }
+}
+```
+
+**변수 치환 후:**
+```
+Authorization: Basic kimmo:11qqaa..
+```
+
+**자동 Base64 인코딩 적용:**
+```
+Authorization: Basic a2ltbW86MTFxcWFhLi4=
+```
+
+#### 주의사항
+- `:` (콜론)이 포함된 경우에만 자동 인코딩됩니다
+- 이미 Base64로 인코딩된 값은 다시 인코딩하지 않습니다
+- `Bearer` 토큰 등 다른 인증 방식은 영향받지 않습니다
+
+#### 사용 예시
+```bash
+python3 generate_scenario.py \
+  /path/to/SgiController.java \
+  --auth-mode all \
+  --default-auth bearer \
+  --default-auth-token "{{USER_CERT_TOKEN}}" \
+  --default-auth-library "capshome-user-auth.json"
+```
+
 ## Continue on Error (Assertion 실패 시 계속 진행)
 
 ### 기능 설명

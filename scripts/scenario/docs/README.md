@@ -148,6 +148,18 @@ python3 scripts/scenario/generate_scenario.py \
   --auth-annotations UserCert:wpm-get-user-info.json \
   --header "X-Token:{{USER_CERT_TOKEN}}"
 
+# 기본 인증 토큰을 위한 Package Library 매핑
+python3 scripts/scenario/generate_scenario.py \
+  /path/to/controller \
+  --auth-mode all \
+  --default-auth bearer \
+  --default-auth-token "{{USER_CERT_TOKEN}}" \
+  --default-auth-library "get-user-token.json"
+
+# Package Library에서 Basic Auth 자동 인코딩
+# library 파일에 "Authorization": "Basic {{env.USER_ID}}:{{env.USER_PW}}"
+# 형식으로 작성하면 자동으로 Base64 인코딩됩니다
+
 # Continue on Error 옵션 (Assertion 실패 시에도 계속 진행)
 python3 scripts/scenario/generate_scenario.py \
   /path/to/controller \

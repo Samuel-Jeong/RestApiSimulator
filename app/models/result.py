@@ -14,6 +14,19 @@ class TestStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+class PreRequestResult(BaseModel):
+    """Result of a pre-request step execution"""
+    step_name: str
+    method: str
+    url: str
+    status: TestStatus
+    status_code: Optional[int] = None
+    response_time_ms: float = 0
+    extracted_variables: Dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+
 class StepResult(BaseModel):
     """Result of a single step"""
     step_name: str
@@ -23,6 +36,7 @@ class StepResult(BaseModel):
     status_code: Optional[int] = None
     response_time_ms: float
     request_headers: Dict[str, str]
+    request_query_params: Optional[Dict[str, Any]] = None
     request_body: Optional[Any] = None
     response_headers: Optional[Dict[str, str]] = None
     response_body: Optional[Any] = None
@@ -42,6 +56,7 @@ class ScenarioResult(BaseModel):
     end_time: datetime
     duration_seconds: float
     steps: List[StepResult]
+    pre_request_results: List[PreRequestResult] = Field(default_factory=list)
     variables: Dict[str, Any] = Field(default_factory=dict)
     total_requests: int = 0
     successful_requests: int = 0
