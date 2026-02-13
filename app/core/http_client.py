@@ -1,6 +1,7 @@
 """HTTP client for making API requests"""
 
 import asyncio
+import base64
 import httpx
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -53,7 +54,13 @@ class HttpClient:
             print(f"🔍 DEBUG - Actual HTTP Request Headers")
             print(f"{'='*80}")
             print(f"Method: {method.upper()}")
-            print(f"URL: {url}")
+            # URL에 query_params가 있으면 ?key=value 형태로 표시
+            if query_params:
+                from urllib.parse import urlencode
+                display_url = f"{url}?{urlencode(query_params, doseq=True)}"
+            else:
+                display_url = url
+            print(f"URL: {display_url}")
             print(f"Headers:")
             for key, value in req_headers.items():
                 if key.lower() == 'authorization':
@@ -149,6 +156,10 @@ class HttpClient:
         query_params = resolver.resolve(step.query_params) if step.query_params else None
         body = resolver.resolve(step.body) if step.body is not None else None
         
+        # Auto-encode Basic Auth if needed
+        if headers and 'Authorization' in headers:
+            headers['Authorization'] = self._process_auth_header(headers['Authorization'])
+        
         # DEBUG: Log resolved headers
         print(f"")
         print(f"{'='*80}")
@@ -206,4 +217,33 @@ class HttpClient:
             return [self._substitute_value(item, context) for item in value]
         else:
             return value
+    
+    def _process_auth_header(self, auth_value: str) -> str:
+        """
+        Process Authorization header and auto-encode Basic Auth if needed
+        
+        Args:
+            auth_value: Authorization header value
+            
+        Returns:
+            Processed authorization header value
+        """
+        if not isinstance(auth_value, str):
+            return auth_value
+        
+        # Check if it's Basic Auth
+        if not auth_value.startswith('Basic '):
+            return auth_value
+        
+        credentials = auth_value[6:].strip()  # Remove "Basic " prefix
+        
+        # Check if already Base64 encoded (Base64 doesn't contain colons)
+        # If it contains a colon, it's in "user:password" format and needs encoding
+        if ':' in credentials:
+            # Encode to Base64
+            encoded = base64.b64encode(credentials.encode()).decode()
+            return f"Basic {encoded}"
+        
+        # Already encoded or invalid format, return as-is
+        return auth_value
 

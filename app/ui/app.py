@@ -764,8 +764,7 @@ class RestApiSimulatorApp(App):
             project_name = user_input[4:].strip()
             if project_name:
                 self.project_manager.create_project(project_name)
-                self.current_project = project_name
-                self.update_status(f"Created and selected project: {project_name}")
+                self.select_project(project_name, created=True)
                 self.show_projects_screen()
             else:
                 self.show_error("Project name cannot be empty")
@@ -775,8 +774,7 @@ class RestApiSimulatorApp(App):
         if user_input.isdigit():
             num = int(user_input)
             if num in self.project_number_mapping:
-                self.current_project = self.project_number_mapping[num]
-                self.update_status(f"Selected project: {self.current_project}")
+                self.select_project(self.project_number_mapping[num])
                 self.show_projects_screen()
             else:
                 self.show_error(f"Invalid project number: {user_input}")
@@ -784,11 +782,49 @@ class RestApiSimulatorApp(App):
         
         # Check if project name
         if user_input in projects:
-            self.current_project = user_input
-            self.update_status(f"Selected project: {self.current_project}")
+            self.select_project(user_input)
             self.show_projects_screen()
         else:
             self.show_error(f"Project not found: {user_input}")
+
+    def select_project(self, project_name: str, created: bool = False):
+        """Select project and re-apply environment from the selected project."""
+        previous_env_name = self.current_environment.name if self.current_environment else None
+        self.current_project = project_name
+        self.current_host_config = None
+        self.current_environment = None
+
+        env_name = self._apply_project_environment(project_name, previous_env_name)
+        if created:
+            status = f"Created and selected project: {project_name}"
+        else:
+            status = f"Selected project: {project_name}"
+
+        if env_name:
+            status += f" | Environment applied: {env_name}"
+        else:
+            status += " | Environment not found"
+
+        self.update_status(status)
+
+    def _apply_project_environment(self, project_name: str, preferred_env_name: Optional[str] = None) -> Optional[str]:
+        """Load and apply an environment for the selected project."""
+        env_names = self.project_manager.list_environments(project_name)
+        if not env_names:
+            return None
+
+        target_env_name = None
+        if preferred_env_name and preferred_env_name in env_names:
+            target_env_name = preferred_env_name
+        else:
+            target_env_name = env_names[0]
+
+        environment = self.project_manager.load_environment(project_name, target_env_name)
+        if not environment:
+            return None
+
+        self.current_environment = environment
+        return target_env_name
     
     def handle_scenario_input(self, user_input: str):
         """Handle scenario selection/creation/execution"""

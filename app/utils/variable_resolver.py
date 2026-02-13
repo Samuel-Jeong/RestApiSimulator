@@ -38,22 +38,32 @@ class VariableResolver:
         else:
             return value
     
-    def _resolve_string(self, text: str) -> Any:
+    def _resolve_string(self, text: str, max_depth: int = 10) -> Any:
         """
-        Resolve variables in a string
+        Resolve variables in a string recursively
         
         Args:
             text: String containing {{variable}} references
+            max_depth: Maximum recursion depth to prevent infinite loops
             
         Returns:
             Resolved string or value
         """
+        if max_depth <= 0:
+            # Prevent infinite recursion
+            return text
+        
         # Check if entire string is a single variable reference
         match = self.VARIABLE_PATTERN.fullmatch(text)
         if match:
             var_path = match.group(1).strip()
             value = self._get_variable_value(var_path)
-            return value if value is not None else text
+            if value is not None:
+                # If resolved value is a string with variables, resolve recursively
+                if isinstance(value, str) and self.VARIABLE_PATTERN.search(value):
+                    return self._resolve_string(value, max_depth - 1)
+                return value
+            return text
         
         # Replace all variable references in string
         def replace_var(match):
@@ -61,7 +71,13 @@ class VariableResolver:
             value = self._get_variable_value(var_path)
             return str(value) if value is not None else match.group(0)
         
-        return self.VARIABLE_PATTERN.sub(replace_var, text)
+        resolved = self.VARIABLE_PATTERN.sub(replace_var, text)
+        
+        # If resolved string still contains variables, resolve recursively
+        if resolved != text and self.VARIABLE_PATTERN.search(resolved):
+            return self._resolve_string(resolved, max_depth - 1)
+        
+        return resolved
     
     def _get_variable_value(self, var_path: str) -> Optional[Any]:
         """

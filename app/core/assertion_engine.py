@@ -9,10 +9,59 @@ class AssertionEngine:
     """Validates response assertions"""
     
     @staticmethod
+    def _to_snake_case(text: str) -> str:
+        """Convert camelCase or PascalCase to snake_case"""
+        # Insert underscore before uppercase letters and convert to lowercase
+        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', text)
+        return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+    
+    @staticmethod
+    def _to_camel_case(text: str) -> str:
+        """Convert snake_case to camelCase"""
+        components = text.split('_')
+        return components[0] + ''.join(x.title() for x in components[1:])
+    
+    @staticmethod
+    def _to_pascal_case(text: str) -> str:
+        """Convert snake_case to PascalCase"""
+        return ''.join(x.title() for x in text.split('_'))
+    
+    @staticmethod
+    def _get_field_from_dict(data: dict, field_name: str) -> Any:
+        """
+        Try to get field from dict with case-insensitive variations
+        
+        Args:
+            data: Dictionary to search
+            field_name: Field name to find
+            
+        Returns:
+            Field value or None if not found
+        """
+        # Try original field name first
+        if field_name in data:
+            return data[field_name]
+        
+        # Try different case variations
+        variations = [
+            field_name,  # original
+            AssertionEngine._to_snake_case(field_name),  # snake_case
+            AssertionEngine._to_camel_case(field_name),  # camelCase
+            AssertionEngine._to_pascal_case(field_name),  # PascalCase
+        ]
+        
+        for variation in variations:
+            if variation in data:
+                return data[variation]
+        
+        return None
+    
+    @staticmethod
     def get_field_value(data: Any, field_path: str) -> Any:
         """
-        Extract value from nested structure using dot notation
+        Extract value from nested structure using dot notation with case-insensitive field matching
         Example: "body.user.id" -> data["body"]["user"]["id"]
+        Supports camelCase, snake_case, PascalCase variations
         """
         if field_path == "status":
             return data.get("status") if isinstance(data, dict) else (data if isinstance(data, int) else None)
@@ -22,7 +71,7 @@ class AssertionEngine:
         
         for part in parts:
             if isinstance(current, dict):
-                current = current.get(part)
+                current = AssertionEngine._get_field_from_dict(current, part)
             elif isinstance(current, list) and part.isdigit():
                 index = int(part)
                 current = current[index] if index < len(current) else None

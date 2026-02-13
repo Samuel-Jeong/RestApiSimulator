@@ -3,6 +3,7 @@
 import base64
 import httpx
 import orjson
+import re
 from pathlib import Path
 from typing import Dict, Any
 from ..models.pre_request import PreRequestConfig, PreRequestStep
@@ -149,7 +150,7 @@ class JsonPreRequestEngine:
             
             # Extract variables from response
             results = {}
-            if step.extract and response.status_code < 400:
+            if step.extract:
                 try:
                     response_data = response.json()
                     results = self._extract_variables(response_data, step.extract)
@@ -159,7 +160,7 @@ class JsonPreRequestEngine:
                             print(f"   ✓ Extracted {key}: {str(value)[:50]}{'...' if len(str(value)) > 50 else ''}")
                     else:
                         # Extract가 정의되어 있지만 결과가 비어있으면 실패
-                        error_msg = f"Extract configuration defined but no data extracted from response. Expected fields: {list(step.extract.keys())}"
+                        error_msg = f"Extract configuration defined but no data extracted from response (HTTP {response.status_code}). Expected fields: {list(step.extract.keys())}"
                         print(f"")
                         print(f"   {'─'*55}")
                         print(f"   ❌ PACKAGE LIBRARY EXTRACTION FAILED")
@@ -175,16 +176,10 @@ class JsonPreRequestEngine:
                     # Re-raise ValueError for extraction failure
                     raise
                 except Exception as e:
-                    error_msg = f"Failed to extract variables: {e}"
+                    error_msg = f"Failed to extract variables (HTTP {response.status_code}): {e}"
                     print(f"   ⚠️  {error_msg}")
                     step_info['error'] = error_msg
                     raise ValueError(error_msg)
-            elif step.extract:
-                # Extract가 정의되어 있지만 응답이 실패
-                error_msg = f"Cannot extract variables: HTTP {response.status_code}"
-                print(f"   ⚠️  {error_msg}")
-                step_info['error'] = error_msg
-                raise ValueError(error_msg)
             
             return results, step_info
             
@@ -259,9 +254,57 @@ class JsonPreRequestEngine:
         
         return results
     
+    @staticmethod
+    def _to_snake_case(text: str) -> str:
+        """Convert camelCase or PascalCase to snake_case"""
+        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', text)
+        return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+    
+    @staticmethod
+    def _to_camel_case(text: str) -> str:
+        """Convert snake_case to camelCase"""
+        components = text.split('_')
+        return components[0] + ''.join(x.title() for x in components[1:])
+    
+    @staticmethod
+    def _to_pascal_case(text: str) -> str:
+        """Convert snake_case to PascalCase"""
+        return ''.join(x.title() for x in text.split('_'))
+    
+    @staticmethod
+    def _get_field_from_dict(data: dict, field_name: str) -> Any:
+        """
+        Try to get field from dict with case-insensitive variations
+        
+        Args:
+            data: Dictionary to search
+            field_name: Field name to find
+            
+        Returns:
+            Field value or None if not found
+        """
+        # Try original field name first
+        if field_name in data:
+            return data[field_name]
+        
+        # Try different case variations
+        variations = [
+            field_name,  # original
+            JsonPreRequestEngine._to_snake_case(field_name),  # snake_case
+            JsonPreRequestEngine._to_camel_case(field_name),  # camelCase
+            JsonPreRequestEngine._to_pascal_case(field_name),  # PascalCase
+        ]
+        
+        for variation in variations:
+            if variation in data:
+                return data[variation]
+        
+        return None
+    
     def _get_by_path(self, data: Any, path: str) -> Any:
         """
-        Get value from data using dot notation path
+        Get value from data using dot notation path with case-insensitive field matching
+        Supports camelCase, snake_case, PascalCase variations
         
         Args:
             data: Data to traverse
@@ -278,7 +321,7 @@ class JsonPreRequestEngine:
         
         for part in parts:
             if isinstance(current, dict):
-                current = current.get(part)
+                current = self._get_field_from_dict(current, part)
             elif isinstance(current, list) and part.isdigit():
                 idx = int(part)
                 current = current[idx] if 0 <= idx < len(current) else None

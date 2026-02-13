@@ -40,13 +40,23 @@ class JavaDtoParser:
             self.base_path = Path(base_path).parent.parent
         self.dto_cache = {}
         self.env_params = env_params or {}  # 환경설정의 params
+        self.inner_class_cache = {}  # 내부 클래스 캐시 {parent_file_path: {inner_class_name: content}}
         
-    def parse_dto(self, dto_class_name: str, import_paths: List[str]) -> Dict[str, Any]:
-        """DTO 클래스 파싱"""
-        if dto_class_name in self.dto_cache:
-            return self.dto_cache[dto_class_name]
+    def parse_dto(self, dto_class_name: str, import_paths: List[str], parent_file_content: str = None) -> Dict[str, Any]:
+        """DTO 클래스 파싱 (내부 클래스 지원)"""
+        cache_key = self._build_dto_cache_key(dto_class_name, parent_file_content)
+        if cache_key in self.dto_cache:
+            return self.dto_cache[cache_key]
         
-        # DTO 파일 찾기
+        # 1. 내부 클래스인지 확인 (parent_file_content가 있으면)
+        if parent_file_content:
+            inner_class_content = self._extract_inner_class(parent_file_content, dto_class_name)
+            if inner_class_content:
+                fields = self._parse_fields(inner_class_content, import_paths, parent_file_content)
+                self.dto_cache[cache_key] = fields
+                return fields
+        
+        # 2. 별도 파일로 존재하는 DTO 찾기
         dto_file = self._find_dto_file(dto_class_name, import_paths)
         if not dto_file:
             return self._generate_default_dto_fields(dto_class_name)
@@ -62,18 +72,30 @@ class JavaDtoParser:
             
             # 부모 클래스가 있으면 먼저 파싱
             if parent_class:
-                parent_fields = self.parse_dto(parent_class, import_paths)
+                parent_fields = self.parse_dto(parent_class, import_paths, content)
                 fields.update(parent_fields)
             
-            # 현재 클래스 필드 파싱 (import_paths 전달)
-            current_fields = self._parse_fields(content, import_paths)
+            # 현재 클래스 필드 파싱 (import_paths와 content 전달)
+            current_fields = self._parse_fields(content, import_paths, content)
             fields.update(current_fields)
             
-            self.dto_cache[dto_class_name] = fields
+            self.dto_cache[cache_key] = fields
             return fields
         except Exception as e:
             print(f"  ⚠️  DTO 파일 읽기 실패 ({dto_class_name}): {e}")
             return self._generate_default_dto_fields(dto_class_name)
+
+    def _build_dto_cache_key(self, dto_class_name: str, parent_file_content: str = None) -> str:
+        """DTO 캐시 키 생성 (내부 클래스명 충돌 방지)"""
+        if not parent_file_content:
+            return dto_class_name
+
+        outer_match = re.search(r'public\s+(?:abstract\s+)?class\s+(\w+)', parent_file_content)
+        if not outer_match:
+            return dto_class_name
+
+        outer_class = outer_match.group(1).strip()
+        return f"{outer_class}::{dto_class_name}"
     
     def _extract_parent_class(self, content: str) -> Optional[str]:
         """부모 클래스 추출 (extends)"""
@@ -87,6 +109,40 @@ class JavaDtoParser:
             return parent_class
         return None
     
+    def _extract_inner_class(self, parent_content: str, inner_class_name: str) -> Optional[str]:
+        """부모 클래스 파일에서 내부 static class 추출"""
+        # 내부 클래스 선언부터 매칭되는 중괄호까지 추출
+        # 접근제어자/ static 유무 모두 허용
+        class_start_pattern = (
+            rf'(?:public|protected|private)?\s*'
+            rf'(?:static\s+)?class\s+{inner_class_name}\s*\{{'
+        )
+        match = re.search(class_start_pattern, parent_content)
+        
+        if not match:
+            return None
+        
+        start_pos = match.start()
+        brace_count = 0
+        in_class = False
+        end_pos = start_pos
+        
+        for i in range(start_pos, len(parent_content)):
+            char = parent_content[i]
+            if char == '{':
+                brace_count += 1
+                in_class = True
+            elif char == '}':
+                brace_count -= 1
+                if in_class and brace_count == 0:
+                    end_pos = i + 1
+                    break
+        
+        if end_pos > start_pos:
+            return parent_content[start_pos:end_pos]
+        
+        return None
+    
     def _extract_nested_type(self, field_type: str) -> Optional[str]:
         """
         필드 타입에서 중첩된 커스텀 타입 추출
@@ -95,17 +151,21 @@ class JavaDtoParser:
         예: CustomType -> CustomType
         """
         # List, Set, Collection 등의 제네릭 타입에서 내부 타입 추출
-        generic_match = re.search(r'(?:List|Set|Collection)<\s*([^<>,]+)\s*>', field_type)
+        generic_match = re.search(r'(?:List|Set|Collection)\s*<\s*([^<>]+?)\s*>', field_type)
         if generic_match:
             inner_type = generic_match.group(1).strip()
+            inner_type = re.sub(r'^\?\s*(?:extends|super)\s+', '', inner_type).strip()
+            inner_type = inner_type.split('.')[-1].strip()
             # 기본 타입이 아니면 반환 (커스텀 DTO인지 확인)
             if self._is_custom_type(inner_type):
                 return inner_type
         
         # Map의 경우 value 타입 추출
-        map_match = re.search(r'Map<[^,]+,\s*([^<>]+)>', field_type)
+        map_match = re.search(r'Map\s*<[^,]+,\s*([^<>]+?)\s*>', field_type)
         if map_match:
             value_type = map_match.group(1).strip()
+            value_type = re.sub(r'^\?\s*(?:extends|super)\s+', '', value_type).strip()
+            value_type = value_type.split('.')[-1].strip()
             if self._is_custom_type(value_type):
                 return value_type
         
@@ -117,6 +177,8 @@ class JavaDtoParser:
     
     def _is_custom_type(self, type_name: str) -> bool:
         """커스텀 타입인지 확인 (Java 기본 타입이 아닌지)"""
+        if not type_name:
+            return False
         basic_types = [
             'String', 'Integer', 'int', 'Long', 'long', 'Double', 'double',
             'Float', 'float', 'Boolean', 'boolean', 'Byte', 'byte',
@@ -157,18 +219,64 @@ class JavaDtoParser:
         
         return None
     
-    def _parse_fields(self, content: str, import_paths: List[str] = None) -> Dict[str, Any]:
-        """DTO 필드 파싱 (재귀적으로 중첩 DTO 분석)"""
+    def _remove_inner_classes(self, content: str) -> str:
+        """content에서 내부 static/non-static 중첩 class 영역만 제거 (외부 클래스는 유지)"""
+        result = content
+        # 외부 클래스 본문 시작 위치를 찾아서 그 이후의 중첩 클래스만 제거
+        outer_match = re.search(r'(?:public|protected|private)\s+(?:abstract\s+)?class\s+\w+[^{]*\{', content)
+        outer_body_start = outer_match.end() if outer_match else 0
+        while True:
+            # 외부 클래스 본문 내부의 중첩 클래스만 탐색
+            search_region = result[outer_body_start:]
+            pattern = r'(?:public|protected|private)\s+(?:static\s+)?class\s+\w+[^{]*\{'
+            match = re.search(pattern, search_region)
+            if not match:
+                break
+            
+            # 실제 위치는 outer_body_start 기준 오프셋 보정
+            abs_start = outer_body_start + match.start()
+            brace_count = 0
+            in_class = False
+            abs_end = abs_start
+            
+            for i in range(abs_start, len(result)):
+                char = result[i]
+                if char == '{':
+                    brace_count += 1
+                    in_class = True
+                elif char == '}':
+                    brace_count -= 1
+                    if in_class and brace_count == 0:
+                        abs_end = i + 1
+                        break
+            
+            # 내부 클래스 영역 제거
+            if abs_end > abs_start:
+                result = result[:abs_start] + result[abs_end:]
+            else:
+                break
+        
+        return result
+    
+    def _parse_fields(self, content: str, import_paths: List[str] = None, parent_file_content: str = None) -> Dict[str, Any]:
+        """DTO 필드 파싱 (재귀적으로 중첩 DTO 분석, 내부 클래스 지원)"""
         fields = {}
         import_paths = import_paths or []
         
+        # 내부 클래스가 있는 경우, 외부 클래스 파싱 시 내부 클래스 영역 제거
+        # 조건: content와 parent_file_content가 같으면 외부 클래스를 파싱하는 것
+        parse_content = content
+        if parent_file_content and content == parent_file_content and re.search(r'public\s+static\s+class\s+\w+', content):
+            # 외부 클래스를 파싱하는 경우 - 내부 클래스 영역 제거
+            parse_content = self._remove_inner_classes(content)
+        
         # 주석 제거
-        content = re.sub(r'/\*[\s\S]*?\*/', '', content)
-        content = re.sub(r'//[^\n]*', '', content)
+        parse_content = re.sub(r'/\*[\s\S]*?\*/', '', parse_content)
+        parse_content = re.sub(r'//[^\n]*', '', parse_content)
         
         # private 필드 찾기
         field_pattern = r'private\s+([\w<>,\s]+)\s+(\w+)\s*;'
-        matches = re.finditer(field_pattern, content)
+        matches = re.finditer(field_pattern, parse_content)
         
         for match in matches:
             field_type = match.group(1).strip()
@@ -180,7 +288,8 @@ class JavaDtoParser:
             field_end = match.end()
             
             # 이전 private 필드를 찾아서 그 이후부터만 확인
-            before_content = content[max(0, field_start-1000):field_start]
+            lookup_start = max(0, field_start - 1000)
+            before_content = parse_content[lookup_start:field_start]
             
             # 이전 private 필드 위치 찾기
             prev_private_match = None
@@ -189,11 +298,11 @@ class JavaDtoParser:
             
             if prev_private_match:
                 # 이전 필드 선언 이후부터 현재 필드까지
-                start_pos = field_start - 1000 + prev_private_match.end()
-                before_field = content[start_pos:field_start]
+                start_pos = lookup_start + prev_private_match.end()
+                before_field = parse_content[start_pos:field_start]
             else:
                 # 이전 필드가 없으면 클래스 선언 이후부터 (최대 300자)
-                before_field = content[max(0, field_start-300):field_start]
+                before_field = parse_content[max(0, field_start-300):field_start]
             
             validation_info = self._extract_validation(before_field, field_name)
             
@@ -203,14 +312,14 @@ class JavaDtoParser:
                 'pattern': validation_info.get('pattern'),
                 'min': validation_info.get('min'),
                 'max': validation_info.get('max'),
-                'sample_value': self._generate_sample_value(field_name, field_type, validation_info, import_paths),
+                'sample_value': self._generate_sample_value(field_name, field_type, validation_info, import_paths, parent_file_content),
                 'nested_fields': None  # 중첩된 DTO 필드 정보
             }
             
             # List<CustomType> 또는 커스텀 타입의 경우 재귀 파싱
             nested_type = self._extract_nested_type(field_type)
             if nested_type:
-                nested_fields = self.parse_dto(nested_type, import_paths)
+                nested_fields = self.parse_dto(nested_type, import_paths or [], parent_file_content)
                 if nested_fields:
                     fields[field_name]['nested_fields'] = nested_fields
         
@@ -359,7 +468,7 @@ class JavaDtoParser:
         
         return validation
     
-    def _generate_sample_value(self, field_name: str, field_type: str, validation: Dict, import_paths: List[str] = None) -> Any:
+    def _generate_sample_value(self, field_name: str, field_type: str, validation: Dict, import_paths: List[str] = None, parent_file_content: str = None) -> Any:
         """필드에 맞는 샘플 값 생성 (재귀적으로 중첩 DTO 포함)"""
         field_lower = field_name.lower()
         import_paths = import_paths or []
@@ -525,25 +634,43 @@ class JavaDtoParser:
                 return "2024-01-01T12:00:00"
         
         elif 'List<' in field_type or 'Set<' in field_type:
-            # List 내부의 커스텀 타입 추출 및 샘플 객체 생성
-            nested_type = self._extract_nested_type(field_type)
-            if nested_type and import_paths:
-                # 중첩 DTO 파싱
-                nested_fields = self.parse_dto(nested_type, import_paths)
-                if nested_fields:
-                    # 중첩 DTO의 샘플 객체 생성
-                    sample_obj = {}
-                    for nested_field_name, nested_field_info in nested_fields.items():
-                        sample_obj[nested_field_name] = nested_field_info['sample_value']
-                    # 샘플 객체 1개를 담은 배열 반환
-                    return [sample_obj]
+            # List 내부 타입 추출
+            generic_match = re.search(r'(?:List|Set|Collection)<\s*([^<>,]+)\s*>', field_type)
+            if generic_match:
+                inner_type = generic_match.group(1).strip()
+                
+                # 기본 타입 List 처리
+                if inner_type in ['Integer', 'int']:
+                    return [0]
+                elif inner_type in ['Long', 'long']:
+                    return [0]
+                elif inner_type in ['Double', 'double', 'Float', 'float']:
+                    return [0.0]
+                elif inner_type in ['Boolean', 'boolean']:
+                    return [True]
+                elif inner_type == 'String':
+                    return ["test"]
+                
+                # 커스텀 타입 List 처리
+                nested_type = self._extract_nested_type(field_type)
+                if nested_type:
+                    # 중첩 DTO 파싱 (parent_file_content 전달)
+                    # import_paths가 없어도 parent_file_content가 있으면 내부 클래스 찾기 가능
+                    nested_fields = self.parse_dto(nested_type, import_paths or [], parent_file_content)
+                    if nested_fields:
+                        # 중첩 DTO의 샘플 객체 생성
+                        sample_obj = {}
+                        for nested_field_name, nested_field_info in nested_fields.items():
+                            sample_obj[nested_field_name] = nested_field_info['sample_value']
+                        # 샘플 객체 1개를 담은 배열 반환
+                        return [sample_obj]
             return []
         
         elif 'Map<' in field_type:
             # Map의 value 타입이 커스텀 DTO인 경우
             nested_type = self._extract_nested_type(field_type)
-            if nested_type and import_paths:
-                nested_fields = self.parse_dto(nested_type, import_paths)
+            if nested_type:
+                nested_fields = self.parse_dto(nested_type, import_paths or [], parent_file_content)
                 if nested_fields:
                     sample_obj = {}
                     for nested_field_name, nested_field_info in nested_fields.items():
@@ -552,8 +679,8 @@ class JavaDtoParser:
             return {}
         
         # 일반 커스텀 타입 (List, Map이 아닌 경우)
-        elif self._is_custom_type(field_type) and import_paths:
-            nested_fields = self.parse_dto(field_type, import_paths)
+        elif self._is_custom_type(field_type):
+            nested_fields = self.parse_dto(field_type, import_paths or [], parent_file_content)
             if nested_fields:
                 sample_obj = {}
                 for nested_field_name, nested_field_info in nested_fields.items():
@@ -687,28 +814,20 @@ class JavaControllerParser:
                 preceding_text = content_no_comments[max(0, anno_start-500):anno_start]
                 has_auth_annotation, found_annotations = self._check_auth_annotations(preceding_text)
                 
-                # 어노테이션 이후 public 메서드 찾기 (최대 5000자 범위)
-                # 다른 어노테이션들이 중간에 있을 수 있으므로 범위를 넓힘
-                # Swagger 어노테이션(@Operation, @ApiResponseExamples)이 복잡하게 중첩된 경우를 고려
-                search_text = content_no_comments[anno_end:anno_end+5000]
-                
-                # public 메서드 패턴 (반환 타입, 제너릭 타입, 여러 줄 파라미터 지원)
-                # public @ResponseBody 같은 inline annotation 지원
-                # ResponseEntity<?> 같은 와일드카드 제네릭 타입 지원
-                # throws 절 지원 (파라미터에 메서드 본문이 포함되지 않도록)
-                method_pattern = r'public\s+(?:@\w+\s+)*([\w<>,\s?]+)\s+(\w+)\s*\(([^)]*(?:\([^)]*\))*[^)]*)\)\s*(?:throws\s+[\w,\s.]+)?\s*\{'
-                method_match = re.search(method_pattern, search_text)
-                
-                if method_match:
-                    return_type = method_match.group(1).strip()  # 반환 타입
-                    method_name = method_match.group(2)
-                    method_params = method_match.group(3)
-                    
-                    # 중복 체크
-                    if not any(e['original_method_name'] == method_name for e in self.endpoints):
-                        endpoint = self._parse_endpoint(method, annotation_params, method_name, method_params, has_auth_annotation, found_annotations, return_type)
-                        if endpoint:
-                            self.endpoints.append(endpoint)
+                method_info = self._extract_method_info_after_annotation(content_no_comments, anno_end)
+                if method_info:
+                    return_type, method_name, method_params = method_info
+                    endpoint = self._parse_endpoint(
+                        method,
+                        annotation_params,
+                        method_name,
+                        method_params,
+                        has_auth_annotation,
+                        found_annotations,
+                        return_type
+                    )
+                    if endpoint and not self._is_duplicate_endpoint(endpoint):
+                        self.endpoints.append(endpoint)
         
         # 2. @RequestMapping(method = RequestMethod.XXX) 형식 찾기
         # @RequestMapping(value = "/path", method = RequestMethod.POST) 또는
@@ -730,27 +849,69 @@ class JavaControllerParser:
             preceding_text = content_no_comments[max(0, anno_start-500):anno_start]
             has_auth_annotation, found_annotations = self._check_auth_annotations(preceding_text)
             
-            # 어노테이션 이후 public 메서드 찾기 (최대 5000자 범위)
-            # Swagger 어노테이션(@Operation, @ApiResponseExamples)이 복잡하게 중첩된 경우를 고려
-            search_text = content_no_comments[anno_end:anno_end+5000]
-            
-            # public 메서드 패턴 (반환 타입, 제너릭 타입, 여러 줄 파라미터 지원)
-            # public @ResponseBody 같은 inline annotation 지원
-            # ResponseEntity<?> 같은 와일드카드 제네릭 타입 지원
-            # throws 절 지원 (파라미터에 메서드 본문이 포함되지 않도록)
-            method_pattern = r'public\s+(?:@\w+\s+)*([\w<>,\s?]+)\s+(\w+)\s*\(([^)]*(?:\([^)]*\))*[^)]*)\)\s*(?:throws\s+[\w,\s.]+)?\s*\{'
-            method_match = re.search(method_pattern, search_text)
-            
-            if method_match:
-                return_type = method_match.group(1).strip()  # 반환 타입
-                method_name = method_match.group(2)
-                method_params = method_match.group(3)
-                
-                # 중복 체크
-                if not any(e['original_method_name'] == method_name for e in self.endpoints):
-                    endpoint = self._parse_endpoint(http_method, annotation_params, method_name, method_params, has_auth_annotation, found_annotations, return_type)
-                    if endpoint:
-                        self.endpoints.append(endpoint)
+            method_info = self._extract_method_info_after_annotation(content_no_comments, anno_end)
+            if method_info:
+                return_type, method_name, method_params = method_info
+                endpoint = self._parse_endpoint(
+                    http_method,
+                    annotation_params,
+                    method_name,
+                    method_params,
+                    has_auth_annotation,
+                    found_annotations,
+                    return_type
+                )
+                if endpoint and not self._is_duplicate_endpoint(endpoint):
+                    self.endpoints.append(endpoint)
+
+    def _extract_method_info_after_annotation(self, content: str, annotation_end: int) -> Optional[tuple]:
+        """어노테이션 뒤에서 해당 엔드포인트의 첫 public 메서드 시그니처를 안전하게 추출"""
+        search_text = content[annotation_end:annotation_end + 5000]
+
+        # 다음 엔드포인트 매핑 어노테이션 전에만 탐색해 잘못된 메서드 매칭을 방지
+        next_mapping = re.search(r'@(Get|Post|Put|Delete|Patch)Mapping\s*(?:\([^)]*\))?|@RequestMapping\s*\(', search_text)
+        if next_mapping:
+            search_text = search_text[:next_mapping.start()]
+
+        signature_match = re.search(
+            r'public\s+(?:@\w+\s+)*([\w<>,\s?]+?)\s+(\w+)\s*\(',
+            search_text
+        )
+        if not signature_match:
+            return None
+
+        return_type = signature_match.group(1).strip()
+        method_name = signature_match.group(2)
+
+        open_paren_idx = signature_match.end() - 1  # '(' 위치
+        depth = 0
+        close_paren_idx = -1
+        for idx in range(open_paren_idx, len(search_text)):
+            char = search_text[idx]
+            if char == '(':
+                depth += 1
+            elif char == ')':
+                depth -= 1
+                if depth == 0:
+                    close_paren_idx = idx
+                    break
+
+        if close_paren_idx == -1:
+            return None
+
+        method_params = search_text[open_paren_idx + 1:close_paren_idx]
+        return return_type, method_name, method_params
+
+    def _is_duplicate_endpoint(self, endpoint: Dict[str, Any]) -> bool:
+        """같은 HTTP method + path + method_name 조합인지 확인"""
+        for existing in self.endpoints:
+            if (
+                existing.get('method') == endpoint.get('method')
+                and existing.get('path') == endpoint.get('path')
+                and existing.get('original_method_name') == endpoint.get('original_method_name')
+            ):
+                return True
+        return False
     
     def _check_auth_annotations(self, text: str) -> tuple[bool, list]:
         """인증 관련 어노테이션 확인 및 발견된 어노테이션 리스트 반환
@@ -834,7 +995,10 @@ class JavaControllerParser:
                 self.import_paths
             )
         
-        # @ModelAttribute DTO 파싱 (GET 요청의 query parameter로 사용)
+        # @ModelAttribute DTO 파싱 (GET/POST 모두 query parameter 또는 form data로 사용)
+        # POST에서 @RequestBody와 함께 사용 시:
+        #   - @RequestBody → body (JSON)
+        #   - @ModelAttribute → query_params
         if params_info.get('model_attribute_type'):
             model_attribute_fields = self.dto_parser.parse_dto(
                 params_info['model_attribute_type'],
@@ -864,6 +1028,7 @@ class JavaControllerParser:
             'has_request_body': params_info['has_request_body'],
             'request_body_type': params_info['request_body_type'],
             'query_params': params_info['query_params'],
+            'request_headers': params_info.get('request_headers', []),
             'dynamic_params': params_info.get('dynamic_params'),  # @RequestParam Map<String, String>
             'dto_fields': dto_fields,
             'model_attribute_fields': model_attribute_fields,
@@ -1091,6 +1256,7 @@ class JavaControllerParser:
             'has_request_body': False,
             'request_body_type': None,
             'query_params': [],
+            'request_headers': [],
             'path_variables': [],
             'model_attribute_type': None,
             'dynamic_params': None,  # @RequestParam Map<String, String> 처리
@@ -1119,14 +1285,73 @@ class JavaControllerParser:
         
         # 줄바꿈 제거 및 공백 정리
         method_params = ' '.join(method_params.split())
+
+        # @RequestBody / @ModelAttribute 타입 추출 보조 함수
+        def _extract_annotated_param_type(annotation_name: str, params_text: str) -> Optional[str]:
+            """
+            어노테이션이 붙은 파라미터에서 타입명을 추출한다.
+            - 패키지 포함 타입(com.foo.BarDto) 지원
+            - final 같은 수식어 지원
+            - 추가 어노테이션(@Valid 등) 지원
+            """
+            pattern = (
+                rf'{annotation_name}\s*(?:\([^)]*\))?\s+'
+                r'(?:final\s+)?'
+                r'(?:@[\w.]+(?:\([^)]*\))?\s+)*'
+                r'([\w.<>,\s\[\]?]+?)\s+\w+\s*(?=,|$)'
+            )
+            match = re.search(pattern, params_text)
+            if not match:
+                # Fallback: 파라미터를 콤마 기준으로 안전 분리 후 토큰 파싱
+                segments = []
+                start = 0
+                paren_depth = 0
+                generic_depth = 0
+                for idx, ch in enumerate(params_text):
+                    if ch == '(':
+                        paren_depth += 1
+                    elif ch == ')':
+                        paren_depth = max(0, paren_depth - 1)
+                    elif ch == '<':
+                        generic_depth += 1
+                    elif ch == '>':
+                        generic_depth = max(0, generic_depth - 1)
+                    elif ch == ',' and paren_depth == 0 and generic_depth == 0:
+                        segments.append(params_text[start:idx].strip())
+                        start = idx + 1
+                tail = params_text[start:].strip()
+                if tail:
+                    segments.append(tail)
+
+                for seg in segments:
+                    if annotation_name not in seg:
+                        continue
+
+                    # target annotation 제거 후 나머지 annotation/final 제거
+                    cleaned = re.sub(rf'{re.escape(annotation_name)}\s*(?:\([^)]*\))?', ' ', seg)
+                    cleaned = re.sub(r'@[\w.]+(?:\([^)]*\))?\s*', ' ', cleaned)
+                    cleaned = re.sub(r'\bfinal\b', ' ', cleaned)
+                    cleaned = ' '.join(cleaned.split())
+                    if not cleaned:
+                        continue
+
+                    parts = cleaned.split()
+                    if len(parts) >= 2:
+                        extracted_type = ' '.join(parts[:-1]).strip()
+                        extracted_type = re.sub(r'^(?:final\s+)+', '', extracted_type).strip()
+                        return extracted_type if extracted_type else None
+                return None
+
+            extracted_type = match.group(1).strip()
+            extracted_type = re.sub(r'^(?:final\s+)+', '', extracted_type).strip()
+            return extracted_type if extracted_type else None
         
         # @RequestBody 처리
         if '@RequestBody' in method_params:
             result['has_request_body'] = True
-            # @Valid @RequestBody CheckInOutReqDto checkInOutReqDto 형식 처리
-            match = re.search(r'@RequestBody\s+(\w+)\s+\w+', method_params)
-            if match:
-                result['request_body_type'] = match.group(1)
+            request_body_type = _extract_annotated_param_type('@RequestBody', method_params)
+            if request_body_type:
+                result['request_body_type'] = request_body_type
         
         # @RequestParam 처리
         # 다양한 형태 지원:
@@ -1139,12 +1364,16 @@ class JavaControllerParser:
         # 먼저 @RequestParam이 있는 모든 파라미터를 찾기 (자료형도 캡처)
         # Map<String, String> 같은 제네릭 타입을 위해 쉼표와 공백도 포함
         # +? 대신 + 사용하여 제네릭 타입 전체 캡처
-        param_pattern = r'@RequestParam\s*(?:\(([^)]*)\))?\s+(?:@[\w]+\s+)*([\w<>,\s]+)\s+(\w+)'
+        param_pattern = (
+            r'@RequestParam\s*(?:\(([^)]*)\))?\s+'
+            r'(?:@[\w.]+(?:\([^)]*\))?\s+)*'
+            r'([\w<>,\s\[\]?]+?)\s+(\w+)\s*(?=,|$)'
+        )
         param_matches = re.finditer(param_pattern, method_params)
         
         for match in param_matches:
             annotation_content = match.group(1)  # 괄호 안 내용
-            param_type = match.group(2)          # 자료형 (String, Integer 등)
+            param_type = match.group(2).strip()  # 자료형 (String, Integer 등)
             variable_name = match.group(3)       # 변수명
             
             # Map<String, String> 타입 체크 - 동적 파라미터
@@ -1181,7 +1410,10 @@ class JavaControllerParser:
             })
         
         # @PathVariable 처리 (자료형도 캡처)
-        path_matches = re.finditer(r'@PathVariable(?:\s*\([^)]*\))?\s+([\w<>]+)\s+(\w+)', method_params)
+        path_matches = re.finditer(
+            r'@PathVariable(?:\s*\([^)]*\))?\s+(?:@[\w.]+(?:\([^)]*\))?\s+)*([\w<>,\s\[\]?]+?)\s+(\w+)\s*(?=,|$)',
+            method_params
+        )
         for match in path_matches:
             param_type = match.group(1)    # 자료형
             variable_name = match.group(2)  # 변수명
@@ -1189,14 +1421,62 @@ class JavaControllerParser:
                 'name': variable_name,
                 'type': param_type
             })
+
+        # @RequestHeader 처리
+        # 지원 형태:
+        # 1. @RequestHeader("Authorization") String accessToken
+        # 2. @RequestHeader(value="Authorization", required=false) String accessToken
+        # 3. @RequestHeader(name="X-Client-Id") String clientId
+        # 4. @RequestHeader String headerValue
+        header_pattern = (
+            r'@RequestHeader\s*(?:\(([^)]*)\))?\s+'
+            r'(?:@[\w.]+(?:\([^)]*\))?\s+)*'
+            r'([\w<>,\s\[\]?]+?)\s+(\w+)\s*(?=,|$)'
+        )
+        header_matches = re.finditer(header_pattern, method_params)
+        for match in header_matches:
+            annotation_content = match.group(1)  # 괄호 안 내용
+            header_type = match.group(2).strip()
+            variable_name = match.group(3).strip()
+
+            header_name = variable_name
+            required = True
+
+            if annotation_content:
+                # value/name 속성에서 헤더명 추출 (하이픈 포함 지원)
+                attr_match = re.search(r'(?:value|name)\s*=\s*["\']([^"\']+)["\']', annotation_content)
+                if attr_match:
+                    header_name = attr_match.group(1).strip()
+                else:
+                    # 직접 값 지정: @RequestHeader("Authorization")
+                    direct_match = re.search(r'^["\']([^"\']+)["\']', annotation_content.strip())
+                    if direct_match:
+                        header_name = direct_match.group(1).strip()
+
+                required_match = re.search(r'required\s*=\s*(true|false)', annotation_content, re.IGNORECASE)
+                if required_match:
+                    required = required_match.group(1).lower() == 'true'
+
+            result['request_headers'].append({
+                'name': header_name,
+                'type': header_type,
+                'variable_name': variable_name,
+                'required': required
+            })
+
+            if header_name.lower() == 'authorization':
+                result['has_auth_header_param'] = True
         
-        # @ModelAttribute 처리 (GET 요청의 경우 query parameter로 처리)
+        # @ModelAttribute 처리 (GET/POST 모두 query parameter 또는 form data로 처리)
         if '@ModelAttribute' in method_params:
-            match = re.search(r'@ModelAttribute\s+(\w+)\s+\w+', method_params)
-            if match:
+            model_attribute_type = _extract_annotated_param_type('@ModelAttribute', method_params)
+            if model_attribute_type:
                 # ModelAttribute는 query parameter나 form data로 사용됨
+                # POST 요청에서 @RequestBody와 함께 사용 가능:
+                #   - @RequestBody: JSON body
+                #   - @ModelAttribute: query parameter 또는 form data
                 # 여기서는 DTO 타입만 저장하고 나중에 처리
-                result['model_attribute_type'] = match.group(1)
+                result['model_attribute_type'] = model_attribute_type
         
         return result
 
@@ -1254,15 +1534,16 @@ class ScenarioGenerator:
                     self.auth_annotations_set.add(annotation)
         
         # 어노테이션별 인증 방식 매핑 파싱 (auth-mode=all 사용 시)
-        # 형식: "NoAuth:basic:{{USER_ID}}:{{USER_PW}}" 
+        # 형식: "NoAuth:none" (인증 없음)
+        #      또는 "NoAuth:basic:{{USER_ID}}:{{USER_PW}}" 
         #      또는 "NoAuth:basic:{{USER_ID}}:{{USER_PW}}:X-Auth-Server={{SERVER_ID}}"
         #      또는 "UserCert:bearer:{{USER_CERT_TOKEN}}:X-Custom={{VALUE}}"
-        self.annotation_auth_map = {}  # {annotation: {'type': 'bearer'|'basic', 'token': '...', 'headers': {...}}}
+        self.annotation_auth_map = {}  # {annotation: {'type': 'bearer'|'basic'|'none', 'token': '...', 'headers': {...}}}
         
         if annotation_auth_mapping:
             for mapping in annotation_auth_mapping:
                 parts = mapping.split(':')  # 전체 분리
-                if len(parts) >= 3:
+                if len(parts) >= 2:
                     annotation = parts[0].strip().replace('@', '')
                     auth_type = parts[1].strip().lower()
                     
@@ -1270,11 +1551,19 @@ class ScenarioGenerator:
                     extra_headers = {}
                     header_start_idx = 3
                     
-                    if auth_type == 'basic' and len(parts) >= 4:
+                    if auth_type == 'none':
+                        # "NoAuth:none" 형식 - 인증 없음
+                        self.annotation_auth_map[annotation] = {
+                            'type': 'none',
+                            'token': None,
+                            'headers': {}
+                        }
+                        continue
+                    elif auth_type == 'basic' and len(parts) >= 4:
                         # "NoAuth:basic:{{USER_ID}}:{{USER_PW}}" 형식
                         token = f"{parts[2].strip()}:{parts[3].strip()}"
                         header_start_idx = 4
-                    elif auth_type == 'bearer':
+                    elif auth_type == 'bearer' and len(parts) >= 3:
                         # "UserCert:bearer:{{USER_CERT_TOKEN}}" 형식
                         token = parts[2].strip()
                         header_start_idx = 3
@@ -1295,15 +1584,16 @@ class ScenarioGenerator:
                     }
         
         # 패키지별 인증 방식 매핑 파싱 (auth-mode=all 사용 시)
-        # 형식: "com.oauth:basic:{{USER_ID}}:{{USER_PW}}" 
+        # 형식: "com.oauth:none" (인증 없음)
+        #      또는 "com.oauth:basic:{{USER_ID}}:{{USER_PW}}" 
         #      또는 "com.oauth:basic:{{USER_ID}}:{{USER_PW}}:X-Auth-Server={{SERVER_ID}}"
         #      또는 "com.user.api:bearer:{{USER_CERT_TOKEN}}:X-Custom={{VALUE}}"
-        self.package_auth_map = {}  # {package: {'type': 'bearer'|'basic', 'token': '...', 'headers': {...}}}
+        self.package_auth_map = {}  # {package: {'type': 'bearer'|'basic'|'none', 'token': '...', 'headers': {...}}}
         
         if package_auth_mapping:
             for mapping in package_auth_mapping:
                 parts = mapping.split(':')  # 전체 분리
-                if len(parts) >= 3:
+                if len(parts) >= 2:
                     package = parts[0].strip()
                     auth_type = parts[1].strip().lower()
                     
@@ -1311,11 +1601,20 @@ class ScenarioGenerator:
                     extra_headers = {}
                     header_start_idx = 3
                     
-                    if auth_type == 'basic' and len(parts) >= 4:
+                    if auth_type == 'none':
+                        # "com.oauth:none" 형식 - 인증 없음
+                        self.package_auth_map[package] = {
+                            'type': 'none',
+                            'token': None,
+                            'headers': {}
+                        }
+                        print(f"📦 패키지 인증 매핑: {package} → none (인증 없음)")
+                        continue
+                    elif auth_type == 'basic' and len(parts) >= 4:
                         # "com.oauth:basic:{{USER_ID}}:{{USER_PW}}" 형식
                         token = f"{parts[2].strip()}:{parts[3].strip()}"
                         header_start_idx = 4
-                    elif auth_type == 'bearer':
+                    elif auth_type == 'bearer' and len(parts) >= 3:
                         # "com.user.api:bearer:{{USER_CERT_TOKEN}}" 형식
                         token = parts[2].strip()
                         header_start_idx = 3
@@ -1387,15 +1686,41 @@ class ScenarioGenerator:
             return None
         
         annotations = endpoint.get('annotations', [])
-        has_auth_header_param = endpoint.get('has_auth_header_param', False)
+        request_headers = endpoint.get('request_headers', [])
+        auth_header_info = next(
+            (h for h in request_headers if str(h.get('name', '')).lower() == 'authorization'),
+            None
+        )
+        has_auth_header_param = endpoint.get('has_auth_header_param', False) or auth_header_info is not None
+        is_auth_header_required = bool(auth_header_info.get('required', True)) if auth_header_info else True
         pre_request_scripts = []
         
         # @RequestHeader(Authorization) 파라미터가 있는 경우:
-        # - 어노테이션별 pre-request는 무시
-        # - 하지만 default_auth_library는 추가 (환경 변수 채우기 위해)
+        # - required=false이면 pre-request 자동 추가하지 않음
+        # - required=true이어도 annotation/package 매핑이 none이면 추가하지 않음
         if has_auth_header_param:
-            if self.auth_mode == 'all' and self.default_auth_library:
-                if self.default_auth_library not in pre_request_scripts:
+            if not is_auth_header_required:
+                return None
+
+            if self.auth_mode == 'all':
+                # 어노테이션 매핑 우선
+                for annotation in annotations:
+                    auth_info = self.annotation_auth_map.get(annotation)
+                    if auth_info:
+                        if auth_info.get('type') == 'none':
+                            return None
+                        break
+
+                # 패키지 매핑 확인
+                package_name = endpoint.get('package', '')
+                for package_pattern, auth_info in self.package_auth_map.items():
+                    if package_name.startswith(package_pattern):
+                        if auth_info.get('type') == 'none':
+                            return None
+                        break
+
+                # 여기까지 none이 아니면 기본 라이브러리만 사용
+                if self.default_auth_library:
                     pre_request_scripts.append(self.default_auth_library)
             return pre_request_scripts if pre_request_scripts else None
         
@@ -1438,14 +1763,69 @@ class ScenarioGenerator:
                 print(f"⚠️  환경 변수 '{var_name}'을 찾을 수 없습니다.")
         
         return result
+
+    def _build_header_placeholder_key(self, header_name: str) -> str:
+        """헤더명을 템플릿 변수 키 형태로 정규화"""
+        key = re.sub(r'[^a-zA-Z0-9_]', '_', header_name.strip())
+        key = re.sub(r'_+', '_', key).strip('_')
+        return key.lower() if key else "header_value"
+
+    def _find_env_variable_for_header(self, header_name: str) -> Optional[str]:
+        """헤더명과 매칭되는 env variable 이름 탐색 (대소문자/구분자 무시)"""
+        target = self._build_header_placeholder_key(header_name)
+        for var_name in self.env_variables.keys():
+            if self._build_header_placeholder_key(var_name) == target:
+                return var_name
+        return None
+
+    def _find_env_variable_for_name(self, name: str) -> Optional[str]:
+        """일반 이름(파라미터/헤더명)과 매칭되는 env variable 탐색"""
+        target = self._build_header_placeholder_key(name)
+        for var_name in self.env_variables.keys():
+            if self._build_header_placeholder_key(var_name) == target:
+                return var_name
+        return None
     
     def _add_headers(self, step: Dict[str, Any], endpoint: Dict[str, Any] = None) -> None:
         """인증 헤더 및 커스텀 헤더 추가"""
         if 'headers' not in step:
             step['headers'] = {}
+
+        # 메서드 시그니처의 @RequestHeader를 step에 선반영
+        request_headers = endpoint.get('request_headers', []) if endpoint else []
+        for header_info in request_headers:
+            header_name = header_info.get('name')
+            variable_name = header_info.get('variable_name')
+            if not header_name:
+                continue
+            if header_name in step['headers']:
+                continue
+
+            # 1) 변수명 기준 env 탐색 (accessToken 우선)
+            # 2) 헤더명 기준 env 탐색 (authorization)
+            env_var = None
+            if variable_name:
+                env_var = self._find_env_variable_for_name(variable_name)
+            if not env_var:
+                env_var = self._find_env_variable_for_header(header_name)
+
+            if env_var:
+                step['headers'][header_name] = f"{{{{{env_var}}}}}"
+            else:
+                # env가 없으면 파라미터 변수명 그대로 사용 (예: accessToken)
+                if variable_name:
+                    step['headers'][header_name] = f"{{{{{variable_name}}}}}"
+                else:
+                    placeholder_key = self._build_header_placeholder_key(header_name)
+                    step['headers'][header_name] = f"{{{{{placeholder_key}}}}}"
         
         # @RequestHeader(Authorization)이 파라미터로 있는지 체크
         has_auth_header_param = endpoint and endpoint.get('has_auth_header_param', False)
+        if not has_auth_header_param and request_headers:
+            has_auth_header_param = any(
+                str(header_info.get('name', '')).lower() == 'authorization'
+                for header_info in request_headers
+            )
         
         # @RequestHeader(Authorization) 파라미터가 있는 경우:
         # - 기존 인증 옵션 맵핑은 무시
@@ -1458,11 +1838,12 @@ class ScenarioGenerator:
                     auth_var = var_name
                     break
             
-            if auth_var:
-                step['headers']['Authorization'] = f"{{{{{auth_var}}}}}"
-            else:
-                # 환경 변수에 없으면 기본값으로 {{authorization}} 사용
-                step['headers']['Authorization'] = "{{authorization}}"
+            if 'Authorization' not in step['headers']:
+                if auth_var:
+                    step['headers']['Authorization'] = f"{{{{{auth_var}}}}}"
+                else:
+                    # 환경 변수에 없으면 기본값으로 {{authorization}} 사용
+                    step['headers']['Authorization'] = "{{authorization}}"
             
             # 커스텀 헤더만 추가하고 리턴
             for key, value in self.custom_headers.items():
@@ -1482,6 +1863,11 @@ class ScenarioGenerator:
                     auth_info = self.annotation_auth_map[annotation]
                     auth_type = auth_info['type']
                     token = auth_info['token']
+                    
+                    # none 타입: 인증 없음 (auth_applied만 True로 설정하여 default 인증 방지)
+                    if auth_type == 'none':
+                        auth_applied = True
+                        break
                     
                     # has_auth_header_param이 True이면 모든 인증 관련 헤더 추가를 건너뜀
                     if not has_auth_header_param:
@@ -1523,6 +1909,11 @@ class ScenarioGenerator:
                     if endpoint_package.startswith(package_pattern):
                         auth_type = auth_info['type']
                         token = auth_info['token']
+                        
+                        # none 타입: 인증 없음 (auth_applied만 True로 설정하여 default 인증 방지)
+                        if auth_type == 'none':
+                            auth_applied = True
+                            break
                         
                         # has_auth_header_param이 True이면 모든 인증 관련 헤더 추가를 건너뜀
                         if not has_auth_header_param:
@@ -1723,10 +2114,14 @@ class ScenarioGenerator:
     def _generate_success_failure_scenarios(self, success_dir: str, failure_dir: str):
         """각 API별 정상/실패 시나리오 생성"""
         print("\n1️⃣  정상/실패 시나리오 생성 중...")
-        
+        method_name_counts = {}
+        for endpoint in self.parser.endpoints:
+            method_key = endpoint['original_method_name'].lower()
+            method_name_counts[method_key] = method_name_counts.get(method_key, 0) + 1
+
         for endpoint in self.parser.endpoints:
             # API별 폴더명
-            api_folder_name = endpoint['original_method_name'].lower()
+            api_folder_name = self._get_endpoint_file_key(endpoint, method_name_counts)
             
             # 정상 시나리오 → success/{api_name}/ 폴더
             success_api_dir = os.path.join(success_dir, api_folder_name)
@@ -1749,6 +2144,82 @@ class ScenarioGenerator:
                 # 모든 실패 케이스는 failure 폴더에 저장
                 filename = f"{api_folder_name}_failure_{failure_type}_{status_code}"
                 self._write_scenario(os.path.join(failure_api_dir, filename), failure_scenario, endpoint)
+
+    def _get_endpoint_file_key(self, endpoint: Dict[str, Any], method_name_counts: Dict[str, int]) -> str:
+        """시나리오 파일/폴더용 endpoint 키 생성 (메서드명 충돌 시 path 접미사 추가)"""
+        method_key = endpoint['original_method_name'].lower()
+        if method_name_counts.get(method_key, 0) <= 1:
+            return method_key
+
+        path = endpoint.get('path', '')
+        path_key = path.strip('/').replace('/', '_').replace('{', '').replace('}', '')
+        path_key = re.sub(r'[^a-zA-Z0-9_]+', '_', path_key).lower().strip('_')
+        if not path_key:
+            path_key = "root"
+
+        return f"{method_key}_{path_key}"
+    
+    def _build_query_params_for_endpoint(self, endpoint: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        endpoint의 @RequestParam + @ModelAttribute + dynamic_params를 query parameter로 빌드
+        
+        Args:
+            endpoint: 엔드포인트 정보
+        
+        Returns:
+            생성된 query parameters dict (비어있으면 빈 dict)
+        """
+        query_params = {}
+        
+        # 일반 @RequestParam
+        if endpoint['query_params']:
+            for param in endpoint['query_params']:
+                param_name = param['name'] if isinstance(param, dict) else param
+                param_type = param['type'] if isinstance(param, dict) else 'String'
+                if param_name in self.env_params:
+                    query_params[param_name] = f"{{{{{param_name}}}}}"
+                else:
+                    query_params[param_name] = self.parser._get_sample_value_for_type(param_type, param_name)
+        
+        # 동적 파라미터 처리 (@RequestParam Map<String, String> parameters)
+        if endpoint.get('dynamic_params'):
+            variable_name = endpoint['dynamic_params']['variable_name']
+            if variable_name in self.env_params:
+                param_string = self.env_params[variable_name]
+                for pair in re.split(r'[&,]', param_string):
+                    if '=' in pair:
+                        key, value = pair.split('=', 1)
+                        query_params[key.strip()] = value.strip()
+        
+        # @ModelAttribute 필드를 query parameter로 추가
+        if endpoint.get('model_attribute_fields'):
+            for field_name, field_info in endpoint['model_attribute_fields'].items():
+                if field_name in self.env_params:
+                    query_params[field_name] = f"{{{{{field_name}}}}}"
+                else:
+                    query_params[field_name] = field_info['sample_value']
+        
+        return query_params
+    
+    def _apply_env_params_to_value(self, value):
+        """
+        값에 환경변수 참조를 재귀적으로 적용
+        - dict: 각 key에 대해 env_params 확인 후 적용
+        - list: 각 요소에 대해 재귀 적용
+        - 기타: 그대로 반환
+        """
+        if isinstance(value, dict):
+            result = {}
+            for k, v in value.items():
+                if k in self.env_params:
+                    result[k] = f"{{{{{k}}}}}"
+                else:
+                    result[k] = self._apply_env_params_to_value(v)
+            return result
+        elif isinstance(value, list):
+            return [self._apply_env_params_to_value(item) for item in value]
+        else:
+            return value
     
     def _build_request_body(self, dto_fields: Dict[str, Any], exclude_fields: List[str] = None) -> Dict[str, Any]:
         """
@@ -1772,9 +2243,430 @@ class ScenarioGenerator:
             if field_name in self.env_params:
                 body[field_name] = f"{{{{{field_name}}}}}"
             else:
-                body[field_name] = field_info['sample_value']
+                # 중첩 DTO(dict, list) 내부 필드에도 env_params 적용
+                body[field_name] = self._apply_env_params_to_value(field_info['sample_value'])
         
         return body
+
+    def _build_query_validation_failure_step(
+        self,
+        endpoint: Dict[str, Any],
+        path: str,
+        path_var_values: Dict[str, Any],
+        query_params: Dict[str, Any],
+        step_name: str
+    ) -> Dict[str, Any]:
+        """Query parameter validation 실패 시나리오용 step 공통 생성"""
+        step = {
+            "name": step_name,
+            "method": endpoint['method'],
+            "path": path,
+            "assertions": [
+                {"field": "status", "operator": "eq", "value": 400}
+            ],
+            "query_params": query_params
+        }
+
+        # Query 검증 실패에서도 실제 API 형태를 맞추기 위해 body를 유지
+        if endpoint['method'] in ['POST', 'PUT', 'PATCH'] and endpoint['dto_fields']:
+            step['body'] = self._build_request_body(endpoint['dto_fields'])
+
+        if path_var_values:
+            step['path_var_values'] = path_var_values
+
+        self._add_headers(step, endpoint)
+        return step
+
+    def _append_query_validation_failure_scenario(
+        self,
+        scenarios: List[Dict[str, Any]],
+        endpoint: Dict[str, Any],
+        pre_request_scripts: List[str],
+        scenario_name: str,
+        description: str,
+        tags: List[str],
+        step: Dict[str, Any],
+        failure_type: str
+    ) -> None:
+        """Query parameter validation 실패 시나리오 공통 추가"""
+        scenario = {
+            "name": scenario_name,
+            "description": description,
+            "host": "default",
+            "tags": tags + [self.parser.controller_name.lower()],
+            "continue_on_error": self.continue_on_error,
+            "steps": [step]
+        }
+
+        if self.environment:
+            scenario["environment"] = self.environment
+
+        if pre_request_scripts:
+            scenario["pre_request_scripts"] = pre_request_scripts
+
+        scenarios.append({
+            'scenario': scenario,
+            'type': failure_type,
+            'status_code': 400
+        })
+
+    def _create_model_attribute_validation_failure_scenarios(
+        self,
+        endpoint: Dict[str, Any],
+        path: str,
+        path_var_values: Dict[str, Any],
+        pre_request_scripts: List[str]
+    ) -> List[Dict[str, Any]]:
+        """@ModelAttribute(Query Parameter) validation 실패 시나리오 생성"""
+        scenarios = []
+        model_fields = endpoint.get('model_attribute_fields') or {}
+        if not model_fields:
+            return scenarios
+
+        numeric_types = {'int', 'Integer', 'long', 'Long', 'byte', 'Byte', 'short', 'Short'}
+        decimal_types = numeric_types | {'double', 'Double', 'float', 'Float', 'BigDecimal', 'BigInteger'}
+
+        for field_name, field_info in model_fields.items():
+            field_type = str(field_info.get('type', 'String')).strip()
+            base_query_params = self._build_query_params_for_endpoint(endpoint)
+
+            # 1) 잘못된 형식
+            invalid_value = None
+            error_desc = ""
+            custom_format = field_info.get('custom_format')
+            field_lower = field_name.lower()
+
+            if custom_format == 'LocalTime':
+                invalid_value = "25:99:99"
+                error_desc = "시간 형식이어야 함(HH:mm:ss)"
+            elif custom_format == 'LocalDate':
+                invalid_value = "2024-13-99"
+                error_desc = "날짜 형식이어야 함(yyyy-MM-dd)"
+            elif custom_format == 'LocalDateTime':
+                invalid_value = "2024-13-99T25:99:99"
+                error_desc = "날짜시간 형식이어야 함(yyyy-MM-ddTHH:mm:ss)"
+            elif custom_format == 'DayBitFlag':
+                invalid_value = "invalid_number"
+                error_desc = "숫자여야 함(요일 비트플래그)"
+            elif field_type in numeric_types or field_type in ['double', 'Double', 'float', 'Float']:
+                invalid_value = "invalid_number"
+                error_desc = "숫자 타입이어야 함"
+            elif field_type in ['boolean', 'Boolean']:
+                invalid_value = "invalid_boolean"
+                error_desc = "boolean 타입이어야 함"
+            elif field_type == 'String':
+                if 'time' in field_lower and ('start' in field_lower or 'end' in field_lower):
+                    invalid_value = "25:99:99"
+                    error_desc = "시간 형식이어야 함(HH:mm:ss)"
+                elif 'date' in field_lower:
+                    invalid_value = "2024-13-99"
+                    error_desc = "날짜 형식이어야 함"
+                elif 'email' in field_lower or field_info.get('email'):
+                    invalid_value = "invalid-email"
+                    error_desc = "이메일 형식이어야 함"
+
+            if invalid_value is not None:
+                query_params = copy.deepcopy(base_query_params)
+                query_params[field_name] = invalid_value
+                step = self._build_query_validation_failure_step(
+                    endpoint, path, path_var_values, query_params,
+                    f"{endpoint['name']} - Query Invalid Format ({field_name})"
+                )
+                self._append_query_validation_failure_scenario(
+                    scenarios,
+                    endpoint,
+                    pre_request_scripts,
+                    f"{endpoint['name']} - Query Invalid Field Format ({field_name})",
+                    f"실패 케이스 (400): 잘못된 Query Parameter 형식({field_name}은 {error_desc})",
+                    ["failure", "validation", "400", "query_invalid_format"],
+                    step,
+                    f"query_invalid_format_{field_name}"
+                )
+
+            # 2) min/max 경계값
+            if field_info.get('max') is not None:
+                exceeded_value = field_info['max'] + 1
+                query_params = copy.deepcopy(base_query_params)
+                query_params[field_name] = exceeded_value if field_type in numeric_types else str(exceeded_value)
+                step = self._build_query_validation_failure_step(
+                    endpoint, path, path_var_values, query_params,
+                    f"{endpoint['name']} - Query Boundary Max Exceeded ({field_name})"
+                )
+                self._append_query_validation_failure_scenario(
+                    scenarios,
+                    endpoint,
+                    pre_request_scripts,
+                    f"{endpoint['name']} - Query Boundary Failure (Max+1)",
+                    f"경계값 실패 케이스 (400): query {field_name} = {exceeded_value} (최대값+1 초과)",
+                    ["failure", "boundary", "validation", "400", "query_max_exceeded"],
+                    step,
+                    f"query_boundary_max_exceeded_{field_name}"
+                )
+
+            if field_info.get('min') is not None:
+                below_value = field_info['min'] - 1
+                query_params = copy.deepcopy(base_query_params)
+                query_params[field_name] = below_value if field_type in numeric_types else str(below_value)
+                step = self._build_query_validation_failure_step(
+                    endpoint, path, path_var_values, query_params,
+                    f"{endpoint['name']} - Query Boundary Min Not Met ({field_name})"
+                )
+                self._append_query_validation_failure_scenario(
+                    scenarios,
+                    endpoint,
+                    pre_request_scripts,
+                    f"{endpoint['name']} - Query Boundary Failure (Min-1)",
+                    f"경계값 실패 케이스 (400): query {field_name} = {below_value} (최소값-1 미만)",
+                    ["failure", "boundary", "validation", "400", "query_min_not_met"],
+                    step,
+                    f"query_boundary_min_not_met_{field_name}"
+                )
+
+            # 3) 문자열 길이 초과
+            if field_type == 'String' and field_info.get('max_length'):
+                query_params = copy.deepcopy(base_query_params)
+                query_params[field_name] = "x" * (field_info['max_length'] + 10)
+                step = self._build_query_validation_failure_step(
+                    endpoint, path, path_var_values, query_params,
+                    f"{endpoint['name']} - Query Max Length Exceeded ({field_name})"
+                )
+                self._append_query_validation_failure_scenario(
+                    scenarios,
+                    endpoint,
+                    pre_request_scripts,
+                    f"{endpoint['name']} - Query Max Length Exceeded ({field_name})",
+                    f"실패 케이스 (400): Query Parameter 최대 길이 초과({field_name} > {field_info['max_length']}자)",
+                    ["failure", "validation", "400", "query_max_length_exceeded"],
+                    step,
+                    f"query_max_length_exceeded_{field_name}"
+                )
+
+            # 4) Decimal 경계값
+            if field_info.get('decimal_max') and field_type in decimal_types.union({'String'}):
+                try:
+                    from decimal import Decimal
+                    max_decimal = Decimal(field_info['decimal_max'])
+                    exceeded_value = max_decimal + Decimal('0.01')
+                    query_params = copy.deepcopy(base_query_params)
+                    query_params[field_name] = str(exceeded_value) if field_type == 'String' else float(exceeded_value)
+                    step = self._build_query_validation_failure_step(
+                        endpoint, path, path_var_values, query_params,
+                        f"{endpoint['name']} - Query DecimalMax Exceeded ({field_name})"
+                    )
+                    self._append_query_validation_failure_scenario(
+                        scenarios,
+                        endpoint,
+                        pre_request_scripts,
+                        f"{endpoint['name']} - Query @DecimalMax Exceeded",
+                        f"경계값 실패 케이스 (400): query {field_name} > {field_info['decimal_max']} (최대값 초과)",
+                        ["failure", "boundary", "validation", "400", "query_decimal_max_exceeded"],
+                        step,
+                        f"query_decimal_max_exceeded_{field_name}"
+                    )
+                except Exception:
+                    pass
+
+            if field_info.get('decimal_min') and field_type in decimal_types.union({'String'}):
+                try:
+                    from decimal import Decimal
+                    min_decimal = Decimal(field_info['decimal_min'])
+                    below_value = min_decimal - Decimal('0.01')
+                    query_params = copy.deepcopy(base_query_params)
+                    query_params[field_name] = str(below_value) if field_type == 'String' else float(below_value)
+                    step = self._build_query_validation_failure_step(
+                        endpoint, path, path_var_values, query_params,
+                        f"{endpoint['name']} - Query DecimalMin Not Met ({field_name})"
+                    )
+                    self._append_query_validation_failure_scenario(
+                        scenarios,
+                        endpoint,
+                        pre_request_scripts,
+                        f"{endpoint['name']} - Query @DecimalMin Not Met",
+                        f"경계값 실패 케이스 (400): query {field_name} < {field_info['decimal_min']} (최소값 미만)",
+                        ["failure", "boundary", "validation", "400", "query_decimal_min_not_met"],
+                        step,
+                        f"query_decimal_min_not_met_{field_name}"
+                    )
+                except Exception:
+                    pass
+
+            # 5) Pattern 불일치
+            if field_info.get('pattern'):
+                query_params = copy.deepcopy(base_query_params)
+                invalid_pattern_value = "INVALID_PATTERN_@@##"
+                if 'email' in field_lower:
+                    invalid_pattern_value = "invalid.email.format"
+                elif 'phone' in field_lower or 'tel' in field_lower:
+                    invalid_pattern_value = "123-456"
+                elif 'url' in field_lower:
+                    invalid_pattern_value = "not-a-valid-url"
+                query_params[field_name] = invalid_pattern_value
+                step = self._build_query_validation_failure_step(
+                    endpoint, path, path_var_values, query_params,
+                    f"{endpoint['name']} - Query Pattern Mismatch ({field_name})"
+                )
+                self._append_query_validation_failure_scenario(
+                    scenarios,
+                    endpoint,
+                    pre_request_scripts,
+                    f"{endpoint['name']} - Query Pattern Mismatch ({field_name})",
+                    f"실패 케이스 (400): Query Parameter 패턴 불일치({field_name})",
+                    ["failure", "validation", "400", "query_pattern_mismatch"],
+                    step,
+                    f"query_pattern_mismatch_{field_name}"
+                )
+
+            # 6) Positive/Negative 계열
+            if field_info.get('positive'):
+                for candidate in [0, -1]:
+                    query_params = copy.deepcopy(base_query_params)
+                    query_params[field_name] = candidate if field_type in numeric_types else str(candidate)
+                    step = self._build_query_validation_failure_step(
+                        endpoint, path, path_var_values, query_params,
+                        f"{endpoint['name']} - Query Positive Constraint ({field_name}={candidate})"
+                    )
+                    self._append_query_validation_failure_scenario(
+                        scenarios,
+                        endpoint,
+                        pre_request_scripts,
+                        f"{endpoint['name']} - Query @Positive Violation ({field_name})",
+                        f"실패 케이스 (400): @Positive 제약 위반 (query {field_name} = {candidate})",
+                        ["failure", "validation", "400", "query_positive_constraint"],
+                        step,
+                        f"query_positive_constraint_{field_name}_{'zero' if candidate == 0 else 'negative'}"
+                    )
+
+            if field_info.get('positive_or_zero'):
+                query_params = copy.deepcopy(base_query_params)
+                query_params[field_name] = -1 if field_type in numeric_types else "-1"
+                step = self._build_query_validation_failure_step(
+                    endpoint, path, path_var_values, query_params,
+                    f"{endpoint['name']} - Query PositiveOrZero Constraint ({field_name})"
+                )
+                self._append_query_validation_failure_scenario(
+                    scenarios,
+                    endpoint,
+                    pre_request_scripts,
+                    f"{endpoint['name']} - Query @PositiveOrZero Violation ({field_name})",
+                    f"실패 케이스 (400): @PositiveOrZero 제약 위반 (query {field_name} = -1)",
+                    ["failure", "validation", "400", "query_positive_or_zero_constraint"],
+                    step,
+                    f"query_positive_or_zero_constraint_{field_name}"
+                )
+
+            if field_info.get('negative'):
+                for candidate in [0, 1]:
+                    query_params = copy.deepcopy(base_query_params)
+                    query_params[field_name] = candidate if field_type in numeric_types else str(candidate)
+                    step = self._build_query_validation_failure_step(
+                        endpoint, path, path_var_values, query_params,
+                        f"{endpoint['name']} - Query Negative Constraint ({field_name}={candidate})"
+                    )
+                    self._append_query_validation_failure_scenario(
+                        scenarios,
+                        endpoint,
+                        pre_request_scripts,
+                        f"{endpoint['name']} - Query @Negative Violation ({field_name})",
+                        f"실패 케이스 (400): @Negative 제약 위반 (query {field_name} = {candidate})",
+                        ["failure", "validation", "400", "query_negative_constraint"],
+                        step,
+                        f"query_negative_constraint_{field_name}_{'zero' if candidate == 0 else 'positive'}"
+                    )
+
+            if field_info.get('negative_or_zero'):
+                query_params = copy.deepcopy(base_query_params)
+                query_params[field_name] = 1 if field_type in numeric_types else "1"
+                step = self._build_query_validation_failure_step(
+                    endpoint, path, path_var_values, query_params,
+                    f"{endpoint['name']} - Query NegativeOrZero Constraint ({field_name})"
+                )
+                self._append_query_validation_failure_scenario(
+                    scenarios,
+                    endpoint,
+                    pre_request_scripts,
+                    f"{endpoint['name']} - Query @NegativeOrZero Violation ({field_name})",
+                    f"실패 케이스 (400): @NegativeOrZero 제약 위반 (query {field_name} = 1)",
+                    ["failure", "validation", "400", "query_negative_or_zero_constraint"],
+                    step,
+                    f"query_negative_or_zero_constraint_{field_name}"
+                )
+
+            # 7) Digits 제약
+            integer_digits = field_info.get('digits_integer')
+            fraction_digits = field_info.get('digits_fraction')
+            if integer_digits is not None and fraction_digits is not None:
+                query_params = copy.deepcopy(base_query_params)
+                query_params[field_name] = "9" * (integer_digits + 1) + "." + "0" * fraction_digits
+                step_integer = self._build_query_validation_failure_step(
+                    endpoint, path, path_var_values, query_params,
+                    f"{endpoint['name']} - Query Digits Integer Exceeded ({field_name})"
+                )
+                self._append_query_validation_failure_scenario(
+                    scenarios,
+                    endpoint,
+                    pre_request_scripts,
+                    f"{endpoint['name']} - Query @Digits Integer Exceeded ({field_name})",
+                    f"실패 케이스 (400): @Digits 제약 위반 (query {field_name} integer 자리수 초과)",
+                    ["failure", "validation", "400", "query_digits_constraint"],
+                    step_integer,
+                    f"query_digits_integer_exceeded_{field_name}"
+                )
+
+                query_params = copy.deepcopy(base_query_params)
+                query_params[field_name] = "9" * integer_digits + "." + "9" * (fraction_digits + 1)
+                step_fraction = self._build_query_validation_failure_step(
+                    endpoint, path, path_var_values, query_params,
+                    f"{endpoint['name']} - Query Digits Fraction Exceeded ({field_name})"
+                )
+                self._append_query_validation_failure_scenario(
+                    scenarios,
+                    endpoint,
+                    pre_request_scripts,
+                    f"{endpoint['name']} - Query @Digits Fraction Exceeded ({field_name})",
+                    f"실패 케이스 (400): @Digits 제약 위반 (query {field_name} fraction 자리수 초과)",
+                    ["failure", "validation", "400", "query_digits_constraint"],
+                    step_fraction,
+                    f"query_digits_fraction_exceeded_{field_name}"
+                )
+
+            # 8) AssertTrue/AssertFalse
+            if field_info.get('assert_true'):
+                query_params = copy.deepcopy(base_query_params)
+                query_params[field_name] = False
+                step = self._build_query_validation_failure_step(
+                    endpoint, path, path_var_values, query_params,
+                    f"{endpoint['name']} - Query AssertTrue Violation ({field_name})"
+                )
+                self._append_query_validation_failure_scenario(
+                    scenarios,
+                    endpoint,
+                    pre_request_scripts,
+                    f"{endpoint['name']} - Query @AssertTrue Violation ({field_name})",
+                    f"실패 케이스 (400): @AssertTrue 제약 위반 (query {field_name}=false)",
+                    ["failure", "validation", "400", "query_assert_true_constraint"],
+                    step,
+                    f"query_assert_true_constraint_{field_name}"
+                )
+
+            if field_info.get('assert_false'):
+                query_params = copy.deepcopy(base_query_params)
+                query_params[field_name] = True
+                step = self._build_query_validation_failure_step(
+                    endpoint, path, path_var_values, query_params,
+                    f"{endpoint['name']} - Query AssertFalse Violation ({field_name})"
+                )
+                self._append_query_validation_failure_scenario(
+                    scenarios,
+                    endpoint,
+                    pre_request_scripts,
+                    f"{endpoint['name']} - Query @AssertFalse Violation ({field_name})",
+                    f"실패 케이스 (400): @AssertFalse 제약 위반 (query {field_name}=true)",
+                    ["failure", "validation", "400", "query_assert_false_constraint"],
+                    step,
+                    f"query_assert_false_constraint_{field_name}"
+                )
+
+        return scenarios
     
     def _create_success_scenario(self, endpoint: Dict[str, Any]) -> Dict[str, Any]:
         """정상 시나리오 생성"""
@@ -1795,41 +2687,8 @@ class ScenarioGenerator:
         if endpoint['dto_fields']:
             step['body'] = self._build_request_body(endpoint['dto_fields'])
         
-        # Query 파라미터 (일반 RequestParam)
-        query_params = {}
-        if endpoint['query_params']:
-            for param in endpoint['query_params']:
-                param_name = param['name'] if isinstance(param, dict) else param
-                param_type = param['type'] if isinstance(param, dict) else 'String'
-                # env_params에 해당 필드가 있으면 변수 참조 형태로 생성
-                if param_name in self.env_params:
-                    query_params[param_name] = f"{{{{{param_name}}}}}"
-                else:
-                    query_params[param_name] = self.parser._get_sample_value_for_type(param_type, param_name)
-        
-        # 동적 파라미터 처리 (@RequestParam Map<String, String> parameters)
-        if endpoint.get('dynamic_params'):
-            variable_name = endpoint['dynamic_params']['variable_name']
-            # env_params에서 해당 변수명으로 값 찾기
-            if variable_name in self.env_params:
-                # "grant_type=client_credentials,test=abc" 형태를 파싱
-                param_string = self.env_params[variable_name]
-                # & 또는 , 로 분리된 key=value 파싱
-                for pair in re.split(r'[&,]', param_string):
-                    if '=' in pair:
-                        key, value = pair.split('=', 1)
-                        # 각 value를 환경변수 참조 형태로 (실제 값도 같이)
-                        query_params[key.strip()] = value.strip()
-        
-        # ModelAttribute 필드를 query parameter로 추가 (GET 요청)
-        if endpoint.get('model_attribute_fields'):
-            for field_name, field_info in endpoint['model_attribute_fields'].items():
-                # env_params에 해당 필드가 있으면 변수 참조 형태로 생성
-                if field_name in self.env_params:
-                    query_params[field_name] = f"{{{{{field_name}}}}}"
-                else:
-                    query_params[field_name] = field_info['sample_value']
-        
+        # Query 파라미터 (@RequestParam + @ModelAttribute + dynamic_params)
+        query_params = self._build_query_params_for_endpoint(endpoint)
         if query_params:
             step['query_params'] = query_params
         
@@ -1868,6 +2727,7 @@ class ScenarioGenerator:
         
         # Path variable 치환 (자료형 기반)
         path, path_var_values = self._replace_path_variables(endpoint['path'], endpoint)
+        pre_request_scripts = self._get_pre_request_scripts(endpoint)
         
         # 1. 권한 오류 시나리오 (401) - 인증이 필요한 API에 대해
         if endpoint.get('requires_auth', False):
@@ -1914,7 +2774,8 @@ class ScenarioGenerator:
                             # 각 value를 환경변수 참조 형태로 (실제 값도 같이)
                             query_params[key.strip()] = value.strip()
             
-            # ModelAttribute 필드를 query parameter로 추가 (GET 요청)
+            # ModelAttribute 필드를 query parameter로 추가 (GET/POST 모두 지원)
+            # @ModelAttribute는 query parameter 또는 form data로 바인딩됨
             if endpoint.get('model_attribute_fields'):
                 for field_name, field_info in endpoint['model_attribute_fields'].items():
                     # env_params에 해당 필드가 있으면 변수 참조 형태로 생성
@@ -1948,8 +2809,8 @@ class ScenarioGenerator:
         
         # 2. 필수 필드 누락 (400)
         
-        # 2-0. GET 요청의 ModelAttribute 필수 필드 누락 (Query Parameter)
-        if endpoint['method'] == 'GET' and endpoint.get('model_attribute_fields'):
+        # 2-0-1. @ModelAttribute 필수 필드 누락 (Query Parameter) - 모든 HTTP method 지원
+        if endpoint.get('model_attribute_fields'):
             required_fields = [
                 name for name, info in endpoint['model_attribute_fields'].items() 
                 if info.get('required')
@@ -1965,19 +2826,35 @@ class ScenarioGenerator:
                         else:
                             query_params[qp_name] = qp_info['sample_value']
                 
+                # 일반 @RequestParam도 query_params에 포함
+                if endpoint['query_params']:
+                    for param in endpoint['query_params']:
+                        param_name = param['name'] if isinstance(param, dict) else param
+                        param_type = param['type'] if isinstance(param, dict) else 'String'
+                        if param_name in self.env_params:
+                            query_params[param_name] = f"{{{{{param_name}}}}}"
+                        else:
+                            query_params[param_name] = self.parser._get_sample_value_for_type(param_type, param_name)
+                
                 step = {
                     "name": f"{endpoint['name']} - Missing {field_name}",
                     "method": endpoint['method'],
                     "path": path,
-                    "query_params": query_params,
                     "assertions": [
                         {"field": "status", "operator": "eq", "value": 400}
                     ]
                 }
                 
+                if query_params:
+                    step['query_params'] = query_params
+                
                 # Path variable 값들을 step에 저장
                 if path_var_values:
                     step['path_var_values'] = path_var_values
+                
+                # POST/PUT/PATCH에서 @RequestBody가 있으면 body도 함께 포함
+                if endpoint['method'] in ['POST', 'PUT', 'PATCH'] and endpoint['dto_fields']:
+                    step['body'] = self._build_request_body(endpoint['dto_fields'])
                 
                 self._add_headers(step, endpoint)
                 
@@ -2003,6 +2880,76 @@ class ScenarioGenerator:
                     'status_code': 400
                 })
         
+        # 2-0-2. @RequestParam 필수 파라미터 누락 - 모든 HTTP method 지원
+        # @Valid @RequestParam String phoneNo 같은 파라미터에 대한 실패 시나리오 생성
+        if endpoint['query_params']:
+            for target_param in endpoint['query_params']:
+                target_name = target_param['name'] if isinstance(target_param, dict) else target_param
+                target_type = target_param['type'] if isinstance(target_param, dict) else 'String'
+                
+                # 해당 파라미터를 제외한 나머지 query_params 생성
+                query_params = {}
+                for param in endpoint['query_params']:
+                    param_name = param['name'] if isinstance(param, dict) else param
+                    param_type = param['type'] if isinstance(param, dict) else 'String'
+                    if param_name != target_name:
+                        if param_name in self.env_params:
+                            query_params[param_name] = f"{{{{{param_name}}}}}"
+                        else:
+                            query_params[param_name] = self.parser._get_sample_value_for_type(param_type, param_name)
+                
+                # @ModelAttribute 필드도 query_params에 포함
+                if endpoint.get('model_attribute_fields'):
+                    for field_name, field_info in endpoint['model_attribute_fields'].items():
+                        if field_name in self.env_params:
+                            query_params[field_name] = f"{{{{{field_name}}}}}"
+                        else:
+                            query_params[field_name] = field_info['sample_value']
+                
+                step = {
+                    "name": f"{endpoint['name']} - Missing {target_name}",
+                    "method": endpoint['method'],
+                    "path": path,
+                    "assertions": [
+                        {"field": "status", "operator": "eq", "value": 400}
+                    ]
+                }
+                
+                if query_params:
+                    step['query_params'] = query_params
+                
+                # Path variable 값들을 step에 저장
+                if path_var_values:
+                    step['path_var_values'] = path_var_values
+                
+                # POST/PUT/PATCH에서 @RequestBody가 있으면 body도 함께 포함
+                if endpoint['method'] in ['POST', 'PUT', 'PATCH'] and endpoint['dto_fields']:
+                    step['body'] = self._build_request_body(endpoint['dto_fields'])
+                
+                self._add_headers(step, endpoint)
+                
+                scenario = {
+                    "name": f"{endpoint['name']} - Missing Required Query Parameter ({target_name})",
+                    "description": f"실패 케이스 (400): 필수 Query Parameter({target_name}) 누락",
+                    "host": "default",
+                    "tags": ["failure", "validation", "400", "missing_query_param", self.parser.controller_name.lower()],
+                    "continue_on_error": self.continue_on_error,
+                    "steps": [step]
+                }
+                
+                if self.environment:
+                    scenario["environment"] = self.environment
+                
+                pre_request_scripts = self._get_pre_request_scripts(endpoint)
+                if pre_request_scripts:
+                    scenario["pre_request_scripts"] = pre_request_scripts
+                
+                scenarios.append({
+                    'scenario': scenario,
+                    'type': f'missing_{target_name}',
+                    'status_code': 400
+                })
+        
         # 2-1. POST, PUT, PATCH의 Request Body 필수 필드 누락
         if endpoint['method'] in ['POST', 'PUT', 'PATCH'] and endpoint['dto_fields']:
             # 최상위 레벨 필수 필드 누락
@@ -2024,6 +2971,11 @@ class ScenarioGenerator:
                         {"field": "status", "operator": "eq", "value": 400}
                     ]
                 }
+                
+                # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                qp = self._build_query_params_for_endpoint(endpoint)
+                if qp:
+                    step['query_params'] = qp
                 
                 # Path variable 값들을 step에 저장
                 if path_var_values:
@@ -2093,6 +3045,11 @@ class ScenarioGenerator:
                         ]
                     }
                     
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step['query_params'] = qp
+                    
                     self._add_headers(step, endpoint)
                     
                     scenario = {
@@ -2140,6 +3097,11 @@ class ScenarioGenerator:
                         ]
                     }
                     
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_empty['query_params'] = qp
+                    
                     self._add_headers(step_empty, endpoint)
                     
                     scenario_empty = {
@@ -2177,6 +3139,11 @@ class ScenarioGenerator:
                         ]
                     }
                     
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_null['query_params'] = qp
+                    
                     self._add_headers(step_null, endpoint)
                     
                     scenario_null = {
@@ -2199,6 +3166,13 @@ class ScenarioGenerator:
                         'type': f'null_{field_name}',
                         'status_code': 400
                     })
+
+        # 2-4. @ModelAttribute(Query Parameter) validation 실패 케이스
+        scenarios.extend(
+            self._create_model_attribute_validation_failure_scenarios(
+                endpoint, path, path_var_values, pre_request_scripts
+            )
+        )
         
         # 3. 잘못된 필드 타입/포맷 (400) - POST, PUT, PATCH (validation 어노테이션이 있는 필드만)
         if endpoint['method'] in ['POST', 'PUT', 'PATCH'] and endpoint['dto_fields']:
@@ -2282,6 +3256,11 @@ class ScenarioGenerator:
                         ]
                     }
                     
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step['query_params'] = qp
+                    
                     self._add_headers(step, endpoint)
                     
                     scenario = {
@@ -2331,6 +3310,11 @@ class ScenarioGenerator:
                         ]
                     }
                     
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_fail['query_params'] = qp
+                    
                     if path_var_values:
                         step_fail['path_var_values'] = path_var_values
                     
@@ -2376,6 +3360,11 @@ class ScenarioGenerator:
                         ]
                     }
                     
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_fail['query_params'] = qp
+                    
                     if path_var_values:
                         step_fail['path_var_values'] = path_var_values
                     
@@ -2401,7 +3390,7 @@ class ScenarioGenerator:
                         'type': f'boundary_min_not_met_{field_name}',
                         'status_code': 400
                     })
-                
+
                 # 문자열 길이 초과
                 if field_type == 'String' and field_info.get('max_length'):
                     body = {}
@@ -2420,6 +3409,11 @@ class ScenarioGenerator:
                             {"field": "status", "operator": "eq", "value": 400}
                         ]
                     }
+                    
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step['query_params'] = qp
                     
                     self._add_headers(step, endpoint)
                     
@@ -2475,6 +3469,11 @@ class ScenarioGenerator:
                             ]
                         }
                         
+                        # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                        qp = self._build_query_params_for_endpoint(endpoint)
+                        if qp:
+                            step_fail['query_params'] = qp
+                        
                         if path_var_values:
                             step_fail['path_var_values'] = path_var_values
                         
@@ -2521,6 +3520,11 @@ class ScenarioGenerator:
                             ]
                         }
                         
+                        # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                        qp = self._build_query_params_for_endpoint(endpoint)
+                        if qp:
+                            step_fail['query_params'] = qp
+                        
                         if path_var_values:
                             step_fail['path_var_values'] = path_var_values
                         
@@ -2564,6 +3568,11 @@ class ScenarioGenerator:
                         ]
                     }
                     
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_zero['query_params'] = qp
+                    
                     if path_var_values:
                         step_zero['path_var_values'] = path_var_values
                     
@@ -2597,6 +3606,11 @@ class ScenarioGenerator:
                             {"field": "status", "operator": "eq", "value": 400}
                         ]
                     }
+                    
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_negative['query_params'] = qp
                     
                     if path_var_values:
                         step_negative['path_var_values'] = path_var_values
@@ -2632,6 +3646,11 @@ class ScenarioGenerator:
                             {"field": "status", "operator": "eq", "value": 400}
                         ]
                     }
+                    
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_negative['query_params'] = qp
                     
                     if path_var_values:
                         step_negative['path_var_values'] = path_var_values
@@ -2669,6 +3688,11 @@ class ScenarioGenerator:
                         ]
                     }
                     
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_zero['query_params'] = qp
+                    
                     if path_var_values:
                         step_zero['path_var_values'] = path_var_values
                     
@@ -2702,6 +3726,11 @@ class ScenarioGenerator:
                             {"field": "status", "operator": "eq", "value": 400}
                         ]
                     }
+                    
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_positive['query_params'] = qp
                     
                     if path_var_values:
                         step_positive['path_var_values'] = path_var_values
@@ -2737,6 +3766,11 @@ class ScenarioGenerator:
                             {"field": "status", "operator": "eq", "value": 400}
                         ]
                     }
+                    
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_positive['query_params'] = qp
                     
                     if path_var_values:
                         step_positive['path_var_values'] = path_var_values
@@ -2781,6 +3815,11 @@ class ScenarioGenerator:
                         ]
                     }
                     
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_integer['query_params'] = qp
+                    
                     if path_var_values:
                         step_integer['path_var_values'] = path_var_values
                     
@@ -2815,6 +3854,11 @@ class ScenarioGenerator:
                             {"field": "status", "operator": "eq", "value": 400}
                         ]
                     }
+                    
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_fraction['query_params'] = qp
                     
                     if path_var_values:
                         step_fraction['path_var_values'] = path_var_values
@@ -2857,6 +3901,11 @@ class ScenarioGenerator:
                         ]
                     }
                     
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_false['query_params'] = qp
+                    
                     if path_var_values:
                         step_false['path_var_values'] = path_var_values
                     
@@ -2891,6 +3940,11 @@ class ScenarioGenerator:
                             {"field": "status", "operator": "eq", "value": 400}
                         ]
                     }
+                    
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_true['query_params'] = qp
                     
                     if path_var_values:
                         step_true['path_var_values'] = path_var_values
@@ -2961,6 +4015,11 @@ class ScenarioGenerator:
                         ]
                     }
                     
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step['query_params'] = qp
+                    
                     self._add_headers(step, endpoint)
                     
                     scenario = {
@@ -3004,6 +4063,11 @@ class ScenarioGenerator:
                         ]
                     }
                     
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_invalid['query_params'] = qp
+                    
                     if path_var_values:
                         step_invalid['path_var_values'] = path_var_values
                     
@@ -3045,6 +4109,11 @@ class ScenarioGenerator:
                         ]
                     }
                     
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_past['query_params'] = qp
+                    
                     if path_var_values:
                         step_past['path_var_values'] = path_var_values
                     
@@ -3079,6 +4148,11 @@ class ScenarioGenerator:
                             {"field": "status", "operator": "eq", "value": 400}
                         ]
                     }
+                    
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_future['query_params'] = qp
                     
                     if path_var_values:
                         step_future['path_var_values'] = path_var_values
@@ -3117,6 +4191,11 @@ class ScenarioGenerator:
                             {"field": "status", "operator": "eq", "value": 400}
                         ]
                     }
+                    
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_invalid['query_params'] = qp
                     
                     if path_var_values:
                         step_invalid['path_var_values'] = path_var_values
@@ -3157,6 +4236,11 @@ class ScenarioGenerator:
                         ]
                     }
                     
+                    # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+                    qp = self._build_query_params_for_endpoint(endpoint)
+                    if qp:
+                        step_invalid['query_params'] = qp
+                    
                     if path_var_values:
                         step_invalid['path_var_values'] = path_var_values
                     
@@ -3189,6 +4273,11 @@ class ScenarioGenerator:
                     {"field": "status", "operator": "eq", "value": 400}
                 ]
             }
+            
+            # @RequestParam, @ModelAttribute의 query_params도 함께 포함
+            qp = self._build_query_params_for_endpoint(endpoint)
+            if qp:
+                step['query_params'] = qp
             
             self._add_headers(step, endpoint)
             
@@ -3400,10 +4489,11 @@ class ScenarioGenerator:
         # 1. Create
         # 중첩 DTO 구조 포함하여 body 생성
         create_body = self._build_request_body(post_endpoint['dto_fields'])
+        create_path, create_path_var_values = self._replace_path_variables(post_endpoint['path'], post_endpoint)
         create_step = {
             "name": "1. 리소스 생성",
             "method": "POST",
-            "path": self._replace_path_variables(post_endpoint['path'], post_endpoint),
+            "path": create_path,
             "body": create_body,
             "assertions": [
                 {"field": "status", "operator": "eq", "value": 200},
@@ -3411,21 +4501,26 @@ class ScenarioGenerator:
             ],
             "extract": {"resource_id": "body.id"}
         }
-        self._add_headers(create_step)
+        if create_path_var_values:
+            create_step["path_var_values"] = create_path_var_values
+        self._add_headers(create_step, post_endpoint)
         steps.append(create_step)
         
         # 2. Get List
         if get_list_endpoint:
+            list_path, list_path_var_values = self._replace_path_variables(get_list_endpoint['path'], get_list_endpoint)
             get_list_step = {
                 "name": "2. 목록 조회",
                 "method": "GET",
-                "path": self._replace_path_variables(get_list_endpoint['path'], get_list_endpoint),
+                "path": list_path,
                 "delay_before": 0.2,
                 "assertions": [
                     {"field": "status", "operator": "eq", "value": 200}
                 ]
             }
-            self._add_headers(get_list_step)
+            if list_path_var_values:
+                get_list_step["path_var_values"] = list_path_var_values
+            self._add_headers(get_list_step, get_list_endpoint)
             steps.append(get_list_step)
         
         # 3. Get Single
@@ -3440,7 +4535,7 @@ class ScenarioGenerator:
                 {"field": "body.id", "operator": "exists"}
             ]
         }
-        self._add_headers(get_single_step)
+        self._add_headers(get_single_step, get_single_endpoint)
         steps.append(get_single_step)
         
         # 4. Update
@@ -3462,7 +4557,7 @@ class ScenarioGenerator:
                     {"field": "status", "operator": "eq", "value": 200}
                 ]
             }
-            self._add_headers(update_step)
+            self._add_headers(update_step, put_endpoint)
             steps.append(update_step)
             
             update_check_step = {
@@ -3474,7 +4569,7 @@ class ScenarioGenerator:
                     {"field": "status", "operator": "eq", "value": 200}
                 ]
             }
-            self._add_headers(update_check_step)
+            self._add_headers(update_check_step, get_single_endpoint)
             steps.append(update_check_step)
         
         # 5. Delete
@@ -3488,7 +4583,7 @@ class ScenarioGenerator:
                 {"field": "status", "operator": "eq", "value": 200}
             ]
         }
-        self._add_headers(delete_step)
+        self._add_headers(delete_step, delete_endpoint)
         steps.append(delete_step)
         
         delete_check_step = {
@@ -3500,7 +4595,7 @@ class ScenarioGenerator:
                 {"field": "status", "operator": "eq", "value": 404}
             ]
         }
-        self._add_headers(delete_check_step)
+        self._add_headers(delete_check_step, get_single_endpoint)
         steps.append(delete_check_step)
         
         scenario = {
@@ -3533,11 +4628,14 @@ class ScenarioGenerator:
         steps = []
         
         for i, endpoint in enumerate(self.parser.endpoints):
+            path, path_var_values = self._replace_path_variables(endpoint['path'], endpoint)
             step = {
                 "name": f"{i+1}. {endpoint['name']}",
                 "method": endpoint['method'],
-                "path": self._replace_path_variables(endpoint['path'], endpoint)
+                "path": path
             }
+            if path_var_values:
+                step['path_var_values'] = path_var_values
             
             if i > 0:
                 step['delay_before'] = 0.2
@@ -3549,7 +4647,7 @@ class ScenarioGenerator:
             step['assertions'] = self._generate_success_assertions(endpoint)
             
             # Bearer 토큰 헤더 추가
-            self._add_headers(step)
+            self._add_headers(step, endpoint)
             
             steps.append(step)
         
@@ -3580,12 +4678,17 @@ class ScenarioGenerator:
     def _generate_load_test_scenarios(self, output_dir: str):
         """성능 및 부하 테스트 시나리오 생성"""
         print("\n3️⃣  성능/부하 테스트 시나리오 생성 중...")
-        
+        method_name_counts = {}
+        for endpoint in self.parser.endpoints:
+            method_key = endpoint['original_method_name'].lower()
+            method_name_counts[method_key] = method_name_counts.get(method_key, 0) + 1
+
         for endpoint in self.parser.endpoints:
             # GET 메서드만 부하 테스트 (조회 성능 테스트)
             if endpoint['method'] == 'GET':
                 load_scenario = self._create_load_test_scenario(endpoint)
-                filename = f"{endpoint['original_method_name'].lower()}_load_test"
+                endpoint_key = self._get_endpoint_file_key(endpoint, method_name_counts)
+                filename = f"{endpoint_key}_load_test"
                 self._write_scenario(os.path.join(output_dir, filename), load_scenario)
         
         # 전체 시나리오 부하 테스트
@@ -3614,7 +4717,7 @@ class ScenarioGenerator:
             step['path_var_values'] = path_var_values
         
         # Bearer 토큰 헤더 추가
-        self._add_headers(step)
+        self._add_headers(step, endpoint)
         
         scenario = {
             "name": f"{endpoint['name']} - Load Test",
@@ -3646,12 +4749,15 @@ class ScenarioGenerator:
         steps = []
         
         for endpoint in self.parser.endpoints:
+            path, path_var_values = self._replace_path_variables(endpoint['path'], endpoint)
             step = {
                 "name": endpoint['name'],
                 "method": endpoint['method'],
-                "path": self._replace_path_variables(endpoint['path'], endpoint),
+                "path": path,
                 "delay_before": 0.1
             }
+            if path_var_values:
+                step['path_var_values'] = path_var_values
             
             if endpoint['dto_fields']:
                 # 중첩 DTO 구조 포함하여 body 생성
@@ -3663,7 +4769,7 @@ class ScenarioGenerator:
             ]
             
             # Bearer 토큰 헤더 추가
-            self._add_headers(step)
+            self._add_headers(step, endpoint)
             
             steps.append(step)
         
@@ -5137,14 +6243,14 @@ def main():
         '--annotation-auth-mapping',
         nargs='+',
         default=[],
-        help='어노테이션별 인증 방식 매핑 (예: "NoAuth:basic:{{USER_ID}}:{{USER_PW}}" "NoAuth:basic:{{USER_ID}}:{{USER_PW}}:X-Auth-Server={{SERVER_ID}}")'
+        help='어노테이션별 인증 방식 매핑 (예: "NoAuth:none" "UserCert:bearer:{{USER_CERT_TOKEN}}" "AdminAuth:basic:{{USER_ID}}:{{USER_PW}}:X-Auth-Server={{SERVER_ID}}")'
     )
     
     parser.add_argument(
         '--package-auth-mapping',
         nargs='+',
         default=[],
-        help='패키지별 인증 방식 매핑 (예: "com.oauth:basic:{{USER_ID}}:{{USER_PW}}:X-Auth-Server={{SERVER_ID}}" "com.user.api:bearer:{{USER_CERT_TOKEN}}")'
+        help='패키지별 인증 방식 매핑 (예: "com.public.api:none" "com.oauth:basic:{{USER_ID}}:{{USER_PW}}:X-Auth-Server={{SERVER_ID}}" "com.user.api:bearer:{{USER_CERT_TOKEN}}")'
     )
     
     parser.add_argument(

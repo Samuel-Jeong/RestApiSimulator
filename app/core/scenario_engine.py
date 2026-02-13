@@ -3,6 +3,7 @@
 import asyncio
 from datetime import datetime
 from typing import Dict, Any, Optional, Callable
+from urllib.parse import urlencode
 from ..models.scenario import Scenario, ScenarioStep
 from ..models.result import StepResult, ScenarioResult, TestStatus, PreRequestResult
 from ..models.config import HostConfig
@@ -235,8 +236,10 @@ class ScenarioEngine:
                     resolved_headers, resolved_query_params, resolved_body = \
                     await self.http_client.execute_step(step, variables)
                 
-                # Build URL for logging
+                # Build URL for logging (query_params가 있으면 ?key=value 포함)
                 url = f"{self.http_client.base_url}{step.path}"
+                if resolved_query_params:
+                    url = f"{url}?{urlencode(resolved_query_params, doseq=True)}"
                 
                 # Validate assertions
                 assertions_passed = 0
@@ -293,11 +296,15 @@ class ScenarioEngine:
                     await asyncio.sleep(1)
         
         # All retries failed - resolve variables for logging
-        url = f"{self.http_client.base_url}{step.path}"
         resolver = VariableResolver(variables)
         resolved_headers = resolver.resolve(step.headers) if step.headers else {}
         resolved_query_params = resolver.resolve(step.query_params) if step.query_params else None
         resolved_body = resolver.resolve(step.body) if step.body is not None else None
+        
+        # Build URL (query_params가 있으면 ?key=value 포함)
+        url = f"{self.http_client.base_url}{step.path}"
+        if resolved_query_params:
+            url = f"{url}?{urlencode(resolved_query_params, doseq=True)}"
         
         # Add prefix to distinguish API errors from package library errors
         error_prefix = "[API_REQUEST_ERROR] " if last_error and "[PACKAGE_LIBRARY_ERROR]" not in str(last_error) else ""
